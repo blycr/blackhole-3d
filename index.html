@@ -475,6 +475,18 @@
       </div>
     </div>
 
+    <div class="control-row">
+      <div class="control-label">
+        <span>帧率上限</span>
+      </div>
+      <div class="theme-pills" id="fpsPills">
+        <button class="pill-btn" data-fps="30">30 FPS</button>
+        <button class="pill-btn" data-fps="45">45 FPS</button>
+        <button class="pill-btn" data-fps="60">60 FPS</button>
+        <button class="pill-btn active" data-fps="0">不限</button>
+      </div>
+    </div>
+
     <div class="toggle-row">
       <span>自动环绕巡航</span>
       <div class="switch on" id="switchOrbit"></div>
@@ -532,8 +544,12 @@
         texType = extHalfFloat.HALF_FLOAT_OES;
         texFilter = extHalfLinear ? gl.LINEAR : gl.NEAREST;
       }
-      document.getElementById("hudSub").textContent =
-        "广义相对论引力透镜 · " + (hdrOK ? "HDR 泛光" : "泛光") + " · 200,000 颗吸积粒子";
+      function updateHudSub(particleCount) {
+        const countStr = particleCount.toLocaleString("en-US");
+        document.getElementById("hudSub").textContent =
+          "广义相对论引力透镜 · " + (hdrOK ? "HDR 泛光" : "泛光") + " · " + countStr + " 颗吸积粒子";
+      }
+      updateHudSub(200000);
 
       // ============================================================
       // 1. 通用全屏四边形
@@ -557,20 +573,9 @@
       // ============================================================
       // 2. 场景着色器：引力透镜 + 流体吸积盘（输出线性 HDR）
       // ============================================================
-      const FS_SCENE = `
+      const FS_SKY_BAKE = `
         precision highp float;
-
-        uniform vec2 uRes;
-        uniform float uTime;
-        uniform float uSpinTime;
-        uniform vec3 uCamPos;
-        uniform mat3 uCamMat;
-        uniform float uGravity;
-        uniform float uDoppler;
-        uniform vec3 uColOuter;
-        uniform vec3 uColMid;
-        uniform vec3 uColInner;
-        uniform float uFluidDensity;
+        varying vec2 vUv;
 
         float hash31(vec3 p) {
           p = fract(p * 0.1031);
@@ -608,6 +613,68 @@
           return v;
         }
 
+        void main() {
+          float lon = (vUv.x - 0.5) * 6.28318530718;
+          float lat = (vUv.y - 0.5) * 3.14159265359;
+          float cl = cos(lat);
+          vec3 d = vec3(cl * cos(lon), sin(lat), cl * sin(lon));
+
+          vec3 col = vec3(0.008, 0.010, 0.018);
+          float band = exp(-pow(d.y * 2.6 + d.x * 0.6, 2.0) * 2.4);
+          float neb1 = fbm(d * 3.8 + vec3(1.2, 3.4, 0.7));
+          float neb2 = fbm(d * 7.5 - vec3(2.1, 0.4, 4.2));
+          vec3 nebCol = mix(vec3(0.04, 0.07, 0.16), vec3(0.16, 0.09, 0.22), neb2);
+          col += nebCol * band * smoothstep(0.32, 0.85, neb1) * 0.95;
+
+          // 平方根编码存入 RGBA8，大幅提升暗部精度避免色带
+          gl_FragColor = vec4(sqrt(max(col, vec3(0.0))), 1.0);
+        }
+      `;
+
+      const FS_SCENE = `
+        precision highp float;
+
+        uniform vec2 uRes;
+        uniform float uTime;
+        uniform float uSpinTime;
+        uniform vec3 uCamPos;
+        uniform mat3 uCamMat;
+        uniform float uGravity;
+        uniform float uDoppler;
+        uniform vec3 uColOuter;
+        uniform vec3 uColMid;
+        uniform vec3 uColInner;
+        uniform float uFluidDensity;
+        uniform sampler2D uNoiseTex;
+        uniform sampler2D uSkyTex;
+
+        float hash31(vec3 p) {
+          p = fract(p * 0.1031);
+          p += dot(p, p.yzx + 33.33);
+          return fract((p.x + p.y) * p.z);
+        }
+
+        // 2D 打包 3D 值噪声纹理采样：1 次硬件双线性 texture2D 替代 8 次 hash31 ALU
+        float noise3(vec3 x) {
+          vec3 p = floor(x);
+          vec3 f = fract(x);
+          f = f * f * (3.0 - 2.0 * f);
+          vec2 uv = (p.xy + vec2(37.0, 17.0) * p.z) + f.xy;
+          vec2 rg = texture2D(uNoiseTex, (uv + 0.5) / 256.0).rg;
+          return mix(rg.r, rg.g, f.z);
+        }
+
+        float fbm(vec3 p) {
+          float v = 0.0;
+          float a = 0.5;
+          for (int i = 0; i < 4; i++) {
+            v += a * noise3(p);
+            p = p * 2.07 + vec3(13.1, 7.7, 5.3);
+            a *= 0.5;
+          }
+          return v;
+        }
+
         vec3 getDiskPalette(float temp, float shift) {
           vec3 col = mix(uColOuter, uColMid, smoothstep(0.0, 0.55, temp));
           col = mix(col, uColInner, smoothstep(0.45, 1.0, temp));
@@ -621,13 +688,14 @@
 
         vec3 sampleSpace(vec3 dir) {
           vec3 d = normalize(dir);
-          vec3 col = vec3(0.008, 0.010, 0.018);
-
-          float band = exp(-pow(d.y * 2.6 + d.x * 0.6, 2.0) * 2.4);
-          float neb1 = fbm(d * 3.8 + vec3(1.2, 3.4, 0.7));
-          float neb2 = fbm(d * 7.5 - vec3(2.1, 0.4, 4.2));
-          vec3 nebCol = mix(vec3(0.04, 0.07, 0.16), vec3(0.16, 0.09, 0.22), neb2);
-          col += nebCol * band * smoothstep(0.32, 0.85, neb1) * 0.95;
+          // 从预烘焙等距柱状贴图读取星云背景，仅保留锐利解析恒星点
+          float lon = (abs(d.x) + abs(d.z) > 1e-5) ? atan(d.z, d.x) : 0.0;
+          vec2 skyUv = vec2(
+            lon * 0.15915494309 + 0.5,
+            asin(clamp(d.y, -1.0, 1.0)) * 0.31830988618 + 0.5
+          );
+          vec3 sky = texture2D(uSkyTex, skyUv).rgb;
+          vec3 col = sky * sky;
 
           // 恒星层 1：光斑圆心与半径都限制在本单元内，
           // 避免被相邻单元的哈希门限裁成"月牙 / 短线"
@@ -669,13 +737,26 @@
 
           vec3 L = cross(pos, vel);
           float h2 = dot(L, L);
+          float r0 = length(pos);
+          float h = sqrt(h2);
 
           vec3 accumColor = vec3(0.0);
           float transmittance = 1.0;
           bool absorbed = false;
           float minR = 100.0;
 
-          // 高精度光线步进：自适应步长 + 远场加速逃逸
+          // 外围纯星空光线解析偏折：远离吸积盘且不会进入强场区时直接跳过步进循环
+          float s0 = dot(pos, vel);
+          if (r0 > diskOuter + 1.5 && (s0 >= 0.0 || h > 10.5 + 1.5 * uGravity)) {
+            if (h2 > 1e-6) {
+              float sinPhi0 = clamp(s0 / r0, -1.0, 1.0);
+              vec3 bVec = pos - s0 * vel;
+              float factor = 0.5 * (1.0 - sinPhi0) * (1.0 - sinPhi0) * (2.0 + sinPhi0);
+              vec3 dv = -uGravity * (bVec / max(h2 - 0.8 * uGravity * h, 1.0)) * factor;
+              vel = normalize(vel + dv);
+            }
+          } else {
+          // 高精度光线步进：自适应步长 + 入/出射远场双端加速
           const int STEPS = 165;
           for (int i = 0; i < STEPS; i++) {
             float r = length(pos);
@@ -691,10 +772,16 @@
               break;
             }
 
-            float maxDt = (r > diskOuter + 1.5 && outgoing) ? 1.4 : 0.34;
-            float dt = clamp(r * 0.055, 0.022, maxDt);
-            if (abs(pos.y) < 0.5 && r < diskOuter + 0.9) {
-              dt = min(dt, 0.045);
+            float dt;
+            if (r > diskOuter + 1.5) {
+              float maxDt = outgoing ? 1.4 : clamp((r - diskOuter - 0.8) * 0.55, 0.34, 1.2);
+              dt = clamp(r * 0.085, 0.34, maxDt);
+            } else {
+              dt = clamp(r * 0.055, 0.022, 0.34);
+              float maxDiskY = (0.062 + 0.030 * max(r - diskInner, 0.0)) * 3.0 + 0.06;
+              if (abs(pos.y) < maxDiskY && r < diskOuter + 0.9) {
+                dt = min(dt, 0.045);
+              }
             }
 
             float r2 = r * r;
@@ -714,16 +801,23 @@
                 float verticalFade = exp(-pow(yDist / diskThickness, 2.0));
                 float baseDensity = radialFade * verticalFade * uFluidDensity;
 
-                // 密度上限已小于截断阈值时跳过极坐标与多层 3D 噪声计算
+                // 密度上限已小于截断阈值时跳过极坐标旋转与多层 3D 噪声计算
                 if (baseDensity > 0.002) {
-                  float angle = (abs(pos.x) + abs(pos.z) > 1e-5) ? atan(pos.z, pos.x) : 0.0;
+                  float rXZ = length(pos.xz);
+                  vec2 dirXZ = rXZ > 1e-4 ? pos.xz / rXZ : vec2(1.0, 0.0);
                   float omega = 2.6 / pow(r, 1.15);
-                  float swirl = angle + uSpinTime * omega + 3.2 / sqrt(r);
+                  float delta = uSpinTime * omega + 3.2 / sqrt(r);
+                  float cd = cos(delta);
+                  float sd = sin(delta);
+                  vec2 rotXZ = vec2(
+                    dirXZ.x * cd - dirXZ.y * sd,
+                    dirXZ.x * sd + dirXZ.y * cd
+                  );
 
                   vec3 sampleCoord = vec3(
-                    cos(swirl) * r * 0.85,
+                    rotXZ.x * r * 0.85,
                     pos.y * 4.0,
-                    sin(swirl) * r * 0.85
+                    rotXZ.y * r * 0.85
                   );
 
                   float turb = fbm(sampleCoord * 1.4 + vec3(0.0, uTime * 0.15, 0.0));
@@ -742,8 +836,7 @@
                     float temp = clamp(1.0 - (r - diskInner) / (diskOuter - diskInner), 0.0, 1.0);
                     temp = pow(temp, 0.72);
 
-                    float rXZ = length(pos.xz);
-                    vec3 tangentVel = rXZ > 1e-4 ? vec3(-pos.z / rXZ, 0.0, pos.x / rXZ) : vec3(1.0, 0.0, 0.0);
+                    vec3 tangentVel = vec3(-dirXZ.y, 0.0, dirXZ.x);
                     float dopplerDot = dot(tangentVel, -vel);
                     float shift = dopplerDot * uDoppler;
                     float beaming = pow(clamp(1.0 + shift * 0.55, 0.26, 2.2), 2.2);
@@ -766,6 +859,7 @@
             }
 
             pos = nextPos;
+          }
           }
 
           // 光子环仅对未被吞噬的掠射光线叠加，保持视界阴影纯黑
@@ -799,6 +893,7 @@
         uniform vec3 uColMid;
         uniform vec3 uColInner;
         uniform float uParticleDensity;
+        uniform float uParticleBoost;
 
         varying vec3 vColor;
         varying float vAlpha;
@@ -820,9 +915,16 @@
             return;
           }
 
+          float life = fract(aSeed.x - uFallTime + aSeed.w * 0.17);
+          if (life < 0.004 || life > 0.996) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            gl_PointSize = 0.0;
+            vAlpha = 0.0;
+            return;
+          }
+
           float rMin = 1.46;
           float rMax = 8.80;
-          float life = fract(aSeed.x - uFallTime + aSeed.w * 0.17);
           float r = mix(rMin, rMax, pow(life, 1.22));
 
           float omega = 2.7 / pow(r, 1.2);
@@ -869,6 +971,13 @@
           vec2 screenPx = (vec2(xCam, yCam) / zCam) * 1.45 * minRes;
           vec2 ndc = (screenPx * 2.0) / uRes;
 
+          if (abs(ndc.x) > 1.05 || abs(ndc.y) > 1.05) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            gl_PointSize = 0.0;
+            vAlpha = 0.0;
+            return;
+          }
+
           gl_Position = vec4(ndc, 0.0, 1.0);
 
           float temp = clamp(1.0 - (r - rMin) / (rMax - rMin), 0.0, 1.0);
@@ -883,8 +992,8 @@
           float lifeFade = smoothstep(0.0, 0.07, life) * (1.0 - smoothstep(0.88, 1.0, life));
 
           vColor = getParticlePalette(temp, shift);
-          // 20 万颗粒子，单颗亮度压低避免叠加过曝
-          vAlpha = lifeFade * beaming * (0.25 + 0.75 * temp) * 0.19 * uParticleDensity;
+          // 按当前启用粒子数做能量补偿，避免动态抽稀导致整体偏暗
+          vAlpha = lifeFade * beaming * (0.25 + 0.75 * temp) * 0.19 * uParticleDensity * uParticleBoost;
 
           float baseSize = mix(0.8, 2.8, pow(aSeed.w, 1.35)) * (11.5 / max(zCam, 2.0));
           gl_PointSize = clamp(baseSize * (minRes / 1000.0 + 0.3), 1.0, 5.5);
@@ -901,9 +1010,11 @@
           float d2 = dot(c, c);
           if (d2 > 0.25) discard;
 
-          float core = exp(-d2 * 30.0);
-          float halo = exp(-d2 * 9.0) * 0.30;
-          float glow = (core + halo) * vAlpha;
+          // 多项式径向衰减近似双指数核，消除每片元两次 exp() 并自然归零到圆盘边缘
+          float x = 1.0 - 4.0 * d2;
+          float x2 = x * x;
+          float x4 = x2 * x2;
+          float glow = (x4 * x2 + x2 * 0.28) * vAlpha;
 
           gl_FragColor = vec4(vColor * glow, glow);
         }
@@ -1003,8 +1114,13 @@
           return fract((p3.x + p3.y) * p3.z);
         }
 
+        float fxaaLuma(vec3 c) {
+          float l = dot(c, vec3(0.299, 0.587, 0.114));
+          return l / (1.0 + l);
+        }
+
         void main() {
-          // 超采样降采样：4 点旋转网格（RGSS），对视界边缘与环纹斜边抗锯齿更优
+          // 超采样降采样：4 点旋转网格（RGSS）；1x 模式启用轻量 HDR 感知边缘抗锯齿
           vec3 sceneCol;
           if (uSSAA > 1.15) {
             sceneCol  = texture2D(uScene, vUv + uDispTexel * vec2(-0.375, -0.125)).rgb;
@@ -1013,7 +1129,32 @@
             sceneCol += texture2D(uScene, vUv + uDispTexel * vec2( 0.375,  0.125)).rgb;
             sceneCol *= 0.25;
           } else {
-            sceneCol = texture2D(uScene, vUv).rgb;
+            vec3 rgbM = texture2D(uScene, vUv).rgb;
+            vec3 rgbNW = texture2D(uScene, vUv + uDispTexel * vec2(-0.75, -0.75)).rgb;
+            vec3 rgbNE = texture2D(uScene, vUv + uDispTexel * vec2( 0.75, -0.75)).rgb;
+            vec3 rgbSW = texture2D(uScene, vUv + uDispTexel * vec2(-0.75,  0.75)).rgb;
+            vec3 rgbSE = texture2D(uScene, vUv + uDispTexel * vec2( 0.75,  0.75)).rgb;
+            float lM  = fxaaLuma(rgbM);
+            float lNW = fxaaLuma(rgbNW);
+            float lNE = fxaaLuma(rgbNE);
+            float lSW = fxaaLuma(rgbSW);
+            float lSE = fxaaLuma(rgbSE);
+            float lMin = min(lM, min(min(lNW, lNE), min(lSW, lSE)));
+            float lMax = max(lM, max(max(lNW, lNE), max(lSW, lSE)));
+            float lRange = lMax - lMin;
+            if (lRange > max(0.05, lMax * 0.14)) {
+              vec2 edgeDir = vec2(-((lNW + lNE) - (lSW + lSE)), (lNW + lSW) - (lNE + lSE));
+              float dirReduce = max((lNW + lNE + lSW + lSE) * 0.03125, 0.0078125);
+              float rcpMin = 1.0 / (min(abs(edgeDir.x), abs(edgeDir.y)) + dirReduce);
+              edgeDir = clamp(edgeDir * rcpMin, vec2(-4.0), vec2(4.0)) * uDispTexel;
+              vec3 rgbA = 0.5 * (
+                texture2D(uScene, vUv + edgeDir * (1.0 / 3.0 - 0.5)).rgb +
+                texture2D(uScene, vUv + edgeDir * (2.0 / 3.0 - 0.5)).rgb
+              );
+              sceneCol = mix(rgbM, rgbA, 0.75);
+            } else {
+              sceneCol = rgbM;
+            }
           }
           vec3 bloomCol = texture2D(uBloom, vUv).rgb;
 
@@ -1104,7 +1245,9 @@
           uColOuter: u(sceneProg, "uColOuter"),
           uColMid: u(sceneProg, "uColMid"),
           uColInner: u(sceneProg, "uColInner"),
-          uFluidDensity: u(sceneProg, "uFluidDensity")
+          uFluidDensity: u(sceneProg, "uFluidDensity"),
+          uNoiseTex: u(sceneProg, "uNoiseTex"),
+          uSkyTex: u(sceneProg, "uSkyTex")
         },
         pt: {
           aSeed: gl.getAttribLocation(ptProg, "aSeed"),
@@ -1118,7 +1261,8 @@
           uColOuter: u(ptProg, "uColOuter"),
           uColMid: u(ptProg, "uColMid"),
           uColInner: u(ptProg, "uColInner"),
-          uParticleDensity: u(ptProg, "uParticleDensity")
+          uParticleDensity: u(ptProg, "uParticleDensity"),
+          uParticleBoost: u(ptProg, "uParticleBoost")
         },
         bright: {
           aPos: gl.getAttribLocation(brightProg, "aPos"),
@@ -1158,6 +1302,71 @@
       const ptBuf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, ptBuf);
       gl.bufferData(gl.ARRAY_BUFFER, ptData, gl.STATIC_DRAW);
+
+      // ============================================================
+      // 7.5 预生成 3D 打包噪声纹理 & 静态星云背景贴图
+      // ============================================================
+      function createNoiseTexture() {
+        const size = 256;
+        const scalar = new Uint8Array(size * size);
+        // 确定性 Mulberry32 PRNG，保证跨帧/刷新噪点一致
+        let seed = 0x5f3759df;
+        for (let i = 0; i < scalar.length; i++) {
+          seed = (seed + 0x6D2B79F5) | 0;
+          let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          scalar[i] = ((t ^ (t >>> 14)) >>> 0) & 255;
+        }
+        const rgba = new Uint8Array(size * size * 4);
+        for (let y = 0; y < size; y++) {
+          const y2 = (y + 17) & 255;
+          for (let x = 0; x < size; x++) {
+            const x2 = (x + 37) & 255;
+            const idx = (y * size + x) * 4;
+            rgba[idx] = scalar[y * size + x];
+            rgba[idx + 1] = scalar[y2 * size + x2];
+            rgba[idx + 2] = 0;
+            rgba[idx + 3] = 255;
+          }
+        }
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        return tex;
+      }
+
+      function bakeSkyTexture() {
+        const w = 1024, h = 512;
+        const tex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+        const bakeProg = createProgram(VS_QUAD, FS_SKY_BAKE, "skyBake", "aPos");
+        if (!bakeProg) return tex;
+
+        const fbo = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+        gl.viewport(0, 0, w, h);
+        gl.disable(gl.BLEND);
+        gl.useProgram(bakeProg);
+        drawFullscreen(gl.getAttribLocation(bakeProg, "aPos"));
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.deleteFramebuffer(fbo);
+        gl.deleteProgram(bakeProg);
+        return tex;
+      }
+
+      const noiseTex = createNoiseTexture();
+      const skyTex = bakeSkyTexture();
 
       // ============================================================
       // 8. 渲染目标管理
@@ -1203,6 +1412,9 @@
       const DEFAULT_ROLL_RAD = DEFAULT_ROLL_DEG * Math.PI / 180;
       const STORAGE_KEY = "gargantua3d.prefs.v1";
 
+      const searchParams = new URLSearchParams(location.search);
+      const wallpaperMode = searchParams.get("wallpaper") === "1";
+
       const state = {
         yaw: 0.45,
         pitch: 0.32,
@@ -1220,12 +1432,12 @@
         doppler: 0.75,
         theme: 0,
         cycle: 60,
-        quality: "auto",
+        quality: wallpaperMode ? "eco" : "auto",
+        fpsCap: wallpaperMode ? 30 : 0,
         autoOrbit: true
       };
 
-      const searchParams = new URLSearchParams(location.search);
-      const wallpaperMode = searchParams.get("wallpaper") === "1";
+      const VALID_FPS_CAPS = [0, 30, 45, 60];
 
       function loadPreferences() {
         try {
@@ -1240,7 +1452,8 @@
               state.roll = state.targetRoll = p.rollDeg * Math.PI / 180;
             }
             if (typeof p.autoOrbit === "boolean") state.autoOrbit = p.autoOrbit;
-            if (p.quality === "auto" || QUALITY_SCALES[p.quality]) state.quality = p.quality;
+            if (!wallpaperMode && (p.quality === "auto" || QUALITY_SCALES[p.quality])) state.quality = p.quality;
+            if (!wallpaperMode && VALID_FPS_CAPS.includes(p.fpsCap)) state.fpsCap = p.fpsCap;
           }
         } catch (_) {}
 
@@ -1256,6 +1469,13 @@
         }
         const qQuality = searchParams.get("quality");
         if (qQuality === "auto" || QUALITY_SCALES[qQuality]) state.quality = qQuality;
+        const qFps = searchParams.get("fps");
+        if (qFps !== null) {
+          const parsedFps = parseInt(qFps, 10);
+          if (Number.isFinite(parsedFps) && parsedFps >= 0 && parsedFps <= 240) {
+            state.fpsCap = parsedFps;
+          }
+        }
       }
 
       function savePreferences() {
@@ -1271,6 +1491,7 @@
             theme: state.theme,
             cycle: state.cycle,
             quality: state.quality,
+            fpsCap: state.fpsCap,
             autoOrbit: state.autoOrbit
           }));
         } catch (_) {}
@@ -1283,15 +1504,15 @@
         let dw = Math.max(1, Math.floor(window.innerWidth * dpr));
         let dh = Math.max(1, Math.floor(window.innerHeight * dpr));
 
-        // 显示分辨率像素预算（约 4K）
-        const BUDGET = 9.0e6;
+        // 显示分辨率像素预算（壁纸模式上限收紧至约 5.0M，普通模式 9.0M）
+        const BUDGET = wallpaperMode ? 5.0e6 : 9.0e6;
         if (dw * dh > BUDGET) {
           const k = Math.sqrt(BUDGET / (dw * dh));
           dw = Math.max(1, Math.floor(dw * k));
           dh = Math.max(1, Math.floor(dh * k));
         }
 
-        // 超采样抗锯齿：渲染分辨率高于显示分辨率，合成时 RGSS 降采样
+        // 超采样抗锯齿：强 GPU 上自动档保持最高 2.0x（12M 像素预算）满血体验，性能不足时随 renderScale 自适应下调
         if (state.quality === "auto") {
           ssaaRatio = Math.max(1.0, Math.min(2.0, Math.sqrt(12.0e6 / Math.max(dw * dh, 1)))) * renderScale;
         } else {
@@ -1308,7 +1529,21 @@
         // 实际倍率（取整后重新计算，保证采样偏移准确）
         ssaaRatio = renderW / dw;
 
+        updateHudSub(getParticleConfig().count);
         createTargets();
+      }
+
+      function getParticleConfig() {
+        let activeCount = PARTICLE_COUNT;
+        if (state.quality === "eco") {
+          activeCount = 90000;
+        } else if (state.quality === "balanced") {
+          activeCount = 130000;
+        } else if (state.quality === "auto") {
+          activeCount = downscaleCount >= 2 ? 90000 : (downscaleCount === 1 ? 130000 : PARTICLE_COUNT);
+        }
+        const boost = activeCount < PARTICLE_COUNT ? Math.pow(PARTICLE_COUNT / activeCount, 0.85) : 1.0;
+        return { count: activeCount, boost: boost };
       }
 
       function createTargets() {
@@ -1457,6 +1692,20 @@
         });
       });
 
+      const fpsBtns = document.querySelectorAll(".pill-btn[data-fps]");
+      fpsBtns.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.fpsCap = parseInt(btn.dataset.fps, 10) || 0;
+          lowFpsStreak = 0;
+          highFpsStreak = 0;
+          frames = 0;
+          fpsTime = performance.now();
+          lastRenderTime = fpsTime;
+          syncFpsUi();
+          savePreferences();
+        });
+      });
+
       const switchOrbit = el("switchOrbit");
       function toggleAutoOrbit() {
         state.autoOrbit = !state.autoOrbit;
@@ -1474,6 +1723,10 @@
         qualityBtns.forEach((b) => b.classList.toggle("active", b.dataset.quality === state.quality));
       }
 
+      function syncFpsUi() {
+        fpsBtns.forEach((b) => b.classList.toggle("active", parseInt(b.dataset.fps, 10) === state.fpsCap));
+      }
+
       function syncUiFromState() {
         sliders.forEach(([sid, vid, key, digits]) => {
           el(sid).value = state[key];
@@ -1487,6 +1740,7 @@
         switchOrbit.classList.toggle("on", state.autoOrbit);
         syncThemeUi();
         syncQualityUi();
+        syncFpsUi();
       }
 
       const controlPanel = el("controlPanel");
@@ -1717,6 +1971,7 @@
 
       let startTime = performance.now();
       let lastFrame = startTime;
+      let lastRenderTime = startTime;
       let frames = 0;
       let fpsTime = startTime;
       let lowFpsStreak = 0;
@@ -1745,20 +2000,32 @@
       syncUiFromState();
 
       document.addEventListener("visibilitychange", () => {
-        if (!document.hidden) {
+        if (document.hidden) {
+          if (rafId) {
+            cancelAnimationFrame(rafId);
+            rafId = 0;
+          }
+        } else {
           const t = performance.now();
           lastFrame = t;
+          lastRenderTime = t;
           fpsTime = t;
           frames = 0;
           lowFpsStreak = 0;
           highFpsStreak = 0;
+          if (!contextLost && !rafId) {
+            rafId = requestAnimationFrame(render);
+          }
         }
       });
 
       canvas.addEventListener("webglcontextlost", (e) => {
         e.preventDefault();
         contextLost = true;
-        if (rafId) cancelAnimationFrame(rafId);
+        if (rafId) {
+          cancelAnimationFrame(rafId);
+          rafId = 0;
+        }
         fpsBadge.textContent = "GPU 暂停";
       });
 
@@ -1767,7 +2034,24 @@
       });
 
       function render(now) {
-        if (contextLost) return;
+        if (contextLost || document.hidden) {
+          rafId = 0;
+          return;
+        }
+
+        // 帧率上限节流：未到下一帧时间窗直接跳过所有 WebGL 提交
+        if (state.fpsCap > 0) {
+          const interval = 1000 / state.fpsCap;
+          const sinceRender = now - lastRenderTime;
+          if (sinceRender < interval - 2.0) {
+            rafId = requestAnimationFrame(render);
+            return;
+          }
+          lastRenderTime = now - Math.min(sinceRender % interval, interval * 0.5);
+        } else {
+          lastRenderTime = now;
+        }
+
         const dt = Math.min((now - lastFrame) * 0.001, 0.1);
         lastFrame = now;
         const elapsed = (now - startTime) * 0.001;
@@ -1811,6 +2095,12 @@
         gl.disable(gl.BLEND);
 
         gl.useProgram(sceneProg);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, noiseTex);
+        gl.uniform1i(L.scene.uNoiseTex, 0);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, skyTex);
+        gl.uniform1i(L.scene.uSkyTex, 1);
         gl.uniform2f(L.scene.uRes, renderW, renderH);
         gl.uniform1f(L.scene.uTime, elapsed);
         gl.uniform1f(L.scene.uSpinTime, spinPhase);
@@ -1824,8 +2114,9 @@
         gl.uniform1f(L.scene.uFluidDensity, state.fluidDensity);
         drawFullscreen(L.scene.aPos);
 
-        // ---------- Pass 2: 20 万颗吸积粒子（加法混合进 HDR 场景）----------
+        // ---------- Pass 2: 吸积粒子（按画质动态抽稀并补偿亮度，加法混合进 HDR 场景）----------
         if (state.particleDensity > 0.01) {
+          const ptCfg = getParticleConfig();
           gl.enable(gl.BLEND);
           gl.blendFunc(gl.ONE, gl.ONE);
           gl.useProgram(ptProg);
@@ -1844,8 +2135,9 @@
           gl.uniform3f(L.pt.uColMid, pal[1][0], pal[1][1], pal[1][2]);
           gl.uniform3f(L.pt.uColInner, pal[2][0], pal[2][1], pal[2][2]);
           gl.uniform1f(L.pt.uParticleDensity, state.particleDensity);
+          gl.uniform1f(L.pt.uParticleBoost, ptCfg.boost);
 
-          gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+          gl.drawArrays(gl.POINTS, 0, ptCfg.count);
           gl.disable(gl.BLEND);
         }
 
@@ -1923,9 +2215,12 @@
           frames = 0;
           fpsTime = now;
 
-          // 忽略切后台/休眠造成的单次长间隔；仅在自动画质档动态调节
+          // 忽略切后台/休眠造成的单次长间隔；阈值随帧率上限自适应缩放，避免 30fps 误判降级
           if (state.quality === "auto" && sampleDt < 1500) {
-            if (fps < 32) {
+            const targetFps = state.fpsCap > 0 ? Math.min(60, state.fpsCap) : 60;
+            const lowThresh = state.fpsCap > 0 && state.fpsCap < 50 ? targetFps * 0.72 : 32;
+            const highThresh = targetFps * 0.93;
+            if (fps < lowThresh) {
               lowFpsStreak++;
               highFpsStreak = 0;
               if (lowFpsStreak >= 2 && renderScale > 0.6 && downscaleCount < 3) {
@@ -1934,7 +2229,7 @@
                 lowFpsStreak = 0;
                 computeRenderSize();
               }
-            } else if (fps >= 56) {
+            } else if (fps >= highThresh) {
               highFpsStreak++;
               lowFpsStreak = 0;
               if (highFpsStreak >= 6 && downscaleCount > 0) {
