@@ -11,6 +11,7 @@
       --text-main: #f3f5fa;
       --text-dim: rgba(243, 245, 250, 0.62);
       --accent: #ff9d42;
+      --accent-soft: rgba(255, 157, 66, 0.18);
       --accent-glow: rgba(255, 157, 66, 0.35);
     }
 
@@ -180,6 +181,12 @@
 
     .control-row {
       margin-bottom: 11px;
+      transition: opacity 0.2s ease;
+    }
+
+    .control-row.disabled {
+      opacity: 0.4;
+      pointer-events: none;
     }
 
     .control-row:last-child {
@@ -243,7 +250,7 @@
     }
 
     .pill-btn.active {
-      background: rgba(255, 157, 66, 0.18);
+      background: var(--accent-soft);
       border-color: var(--accent);
       color: var(--text-main);
       font-weight: 500;
@@ -342,7 +349,7 @@
   </div>
 
   <div class="hint-bar" id="hintBar">
-    左键 / 单指拖拽旋转 · 滚轮 / 双指缩放
+    拖拽旋转 · 滚轮缩放 · H 隐藏界面 · Space 巡航 · R 重置
   </div>
 
   <aside class="control-panel" id="controlPanel">
@@ -419,12 +426,24 @@
       </div>
     </div>
 
-    <div class="control-row">
+    <div class="control-row" id="rowCycle">
       <div class="control-label">
         <span>色彩循环周期</span>
         <span class="control-val" id="valCycle">60s</span>
       </div>
       <input type="range" id="sliderCycle" min="20" max="300" step="5" value="60" />
+    </div>
+
+    <div class="control-row">
+      <div class="control-label">
+        <span>超采样画质</span>
+      </div>
+      <div class="theme-pills" id="qualityPills">
+        <button class="pill-btn active" data-quality="auto">自动</button>
+        <button class="pill-btn" data-quality="ultra">极致 2x</button>
+        <button class="pill-btn" data-quality="balanced">均衡 1.4x</button>
+        <button class="pill-btn" data-quality="eco">省电 1x</button>
+      </div>
     </div>
 
     <div class="toggle-row">
@@ -514,10 +533,10 @@
 
         uniform vec2 uRes;
         uniform float uTime;
+        uniform float uSpinTime;
         uniform vec3 uCamPos;
         uniform mat3 uCamMat;
         uniform float uGravity;
-        uniform float uSpin;
         uniform float uDoppler;
         uniform vec3 uColOuter;
         uniform vec3 uColMid;
@@ -627,7 +646,7 @@
           bool absorbed = false;
           float minR = 100.0;
 
-          // 高精度光线步进：加倍的步数与更细的步长
+          // 高精度光线步进：自适应步长 + 远场加速逃逸
           const int STEPS = 165;
           for (int i = 0; i < STEPS; i++) {
             float r = length(pos);
@@ -638,11 +657,13 @@
               break;
             }
 
-            if (r > 30.0 && dot(pos, vel) > 0.0) {
+            bool outgoing = dot(pos, vel) > 0.0;
+            if (r > 22.0 && outgoing) {
               break;
             }
 
-            float dt = clamp(r * 0.055, 0.022, 0.34);
+            float maxDt = (r > diskOuter + 1.5 && outgoing) ? 1.4 : 0.34;
+            float dt = clamp(r * 0.055, 0.022, maxDt);
             if (abs(pos.y) < 0.5 && r < diskOuter + 0.9) {
               dt = min(dt, 0.045);
             }
@@ -658,50 +679,58 @@
               float diskThickness = 0.062 + 0.030 * (r - diskInner);
               float yDist = abs(pos.y);
 
-              if (r > diskInner * 0.92 && r < diskOuter && yDist < diskThickness * 3.4) {
+              if (r > diskInner * 0.92 && r < diskOuter && yDist < diskThickness * 2.8) {
                 float radialFade = smoothstep(diskInner * 0.94, diskInner + 0.32, r) *
                                    (1.0 - smoothstep(diskOuter - 1.6, diskOuter, r));
                 float verticalFade = exp(-pow(yDist / diskThickness, 2.0));
+                float baseDensity = radialFade * verticalFade * uFluidDensity;
 
-                float angle = atan(pos.z, pos.x);
-                float omega = (2.6 / pow(r, 1.15)) * uSpin;
-                float swirl = angle + uTime * omega + 3.2 / sqrt(r);
+                // 密度上限已小于截断阈值时跳过极坐标与多层 3D 噪声计算
+                if (baseDensity > 0.002) {
+                  float angle = (abs(pos.x) + abs(pos.z) > 1e-5) ? atan(pos.z, pos.x) : 0.0;
+                  float omega = 2.6 / pow(r, 1.15);
+                  float swirl = angle + uSpinTime * omega + 3.2 / sqrt(r);
 
-                vec3 sampleCoord = vec3(
-                  cos(swirl) * r * 0.85,
-                  pos.y * 4.0,
-                  sin(swirl) * r * 0.85
-                );
+                  vec3 sampleCoord = vec3(
+                    cos(swirl) * r * 0.85,
+                    pos.y * 4.0,
+                    sin(swirl) * r * 0.85
+                  );
 
-                float turb = fbm(sampleCoord * 1.4 + vec3(0.0, uTime * 0.15, 0.0));
-                // 高频细节层：让气流边缘呈丝状
-                float detail = noise3(sampleCoord * 5.2 + vec3(0.0, uTime * 0.42, 0.0));
-                float rings = 0.78 + 0.22 * sin(r * 6.2 - turb * 5.0);
-                // 尘埃暗带（单次低频噪声，避免重复 fbm 拖慢帧率）
-                float dust = noise3(sampleCoord * 2.1 - vec3(uTime * 0.08, 0.0, 0.0));
+                  float turb = fbm(sampleCoord * 1.4 + vec3(0.0, uTime * 0.15, 0.0));
+                  // 高频细节层：让气流边缘呈丝状
+                  float detail = noise3(sampleCoord * 5.2 + vec3(0.0, uTime * 0.42, 0.0));
+                  float rings = 0.78 + 0.22 * sin(r * 6.2 - turb * 5.0);
+                  // 尘埃暗带（单次低频噪声，避免重复 fbm 拖慢帧率）
+                  float dust = noise3(sampleCoord * 2.1 - vec3(uTime * 0.08, 0.0, 0.0));
 
-                float density = radialFade * verticalFade * rings * uFluidDensity
-                              * smoothstep(0.20, 0.80, turb)
-                              * mix(0.55, 1.25, detail)
-                              * mix(0.48, 1.15, smoothstep(0.15, 0.65, dust));
+                  float density = baseDensity * rings
+                                * smoothstep(0.20, 0.80, turb)
+                                * mix(0.55, 1.25, detail)
+                                * mix(0.48, 1.15, smoothstep(0.15, 0.65, dust));
 
-                if (density > 0.003) {
-                  float temp = clamp(1.0 - (r - diskInner) / (diskOuter - diskInner), 0.0, 1.0);
-                  temp = pow(temp, 0.72);
+                  if (density > 0.003) {
+                    float temp = clamp(1.0 - (r - diskInner) / (diskOuter - diskInner), 0.0, 1.0);
+                    temp = pow(temp, 0.72);
 
-                  vec3 tangentVel = normalize(vec3(-pos.z, 0.0, pos.x));
-                  float dopplerDot = dot(tangentVel, -vel);
-                  float shift = dopplerDot * uDoppler;
-                  float beaming = pow(clamp(1.0 + shift * 0.55, 0.26, 2.2), 2.2);
+                    float rXZ = length(pos.xz);
+                    vec3 tangentVel = rXZ > 1e-4 ? vec3(-pos.z / rXZ, 0.0, pos.x / rXZ) : vec3(1.0, 0.0, 0.0);
+                    float dopplerDot = dot(tangentVel, -vel);
+                    float shift = dopplerDot * uDoppler;
+                    float beaming = pow(clamp(1.0 + shift * 0.55, 0.26, 2.2), 2.2);
 
-                  vec3 emitCol = getDiskPalette(temp, shift);
-                  float intensity = density * beaming * (2.0 + 2.8 * temp) * dt * 6.4;
+                    vec3 emitCol = getDiskPalette(temp, shift);
+                    // 步长无关的均匀介质吸收-发射积分
+                    float stepTrans = exp(-density * dt * 2.4);
+                    float stepAlpha = 1.0 - stepTrans;
+                    float emitScale = beaming * (2.0 + 2.8 * temp) * (6.4 / 2.4);
 
-                  accumColor += transmittance * emitCol * intensity;
-                  transmittance *= exp(-density * dt * 2.4);
+                    accumColor += transmittance * emitCol * emitScale * stepAlpha;
+                    transmittance *= stepTrans;
 
-                  if (transmittance < 0.015) {
-                    break;
+                    if (transmittance < 0.015) {
+                      break;
+                    }
                   }
                 }
               }
@@ -710,12 +739,12 @@
             pos = nextPos;
           }
 
-          // 光子环：贴近光子球多次绕行的光线形成细锐亮环
-          float photonRing = exp(-pow((minR - 1.36 * rs) / 0.175, 2.0)) * 0.75;
-          vec3 ringColor = getDiskPalette(0.94, 0.2);
-          accumColor += transmittance * ringColor * photonRing;
-
+          // 光子环仅对未被吞噬的掠射光线叠加，保持视界阴影纯黑
           if (!absorbed) {
+            float photonRing = exp(-pow((minR - 1.36 * rs) / 0.175, 2.0)) * 0.75;
+            photonRing *= smoothstep(1.02 * rs, 1.16 * rs, minR);
+            vec3 ringColor = getDiskPalette(0.94, 0.2);
+            accumColor += transmittance * ringColor * photonRing;
             accumColor += transmittance * sampleSpace(vel);
           }
 
@@ -731,11 +760,11 @@
         attribute vec4 aSeed;
 
         uniform vec2 uRes;
-        uniform float uTime;
+        uniform float uSpinTime;
+        uniform float uFallTime;
         uniform vec3 uCamPos;
         uniform mat3 uCamMat;
         uniform float uGravity;
-        uniform float uSpin;
         uniform float uDoppler;
         uniform vec3 uColOuter;
         uniform vec3 uColMid;
@@ -764,12 +793,11 @@
 
           float rMin = 1.46;
           float rMax = 8.80;
-          float fallSpeed = 0.030 * (0.4 + 0.6 * uSpin);
-          float life = fract(aSeed.x - uTime * fallSpeed + aSeed.w * 0.17);
+          float life = fract(aSeed.x - uFallTime + aSeed.w * 0.17);
           float r = mix(rMin, rMax, pow(life, 1.22));
 
-          float omega = (2.7 / pow(r, 1.2)) * uSpin;
-          float angle = aSeed.y + uTime * omega + 3.5 / sqrt(r);
+          float omega = 2.7 / pow(r, 1.2);
+          float angle = aSeed.y + uSpinTime * omega + 3.5 / sqrt(r);
 
           float thickness = 0.038 + 0.050 * (r - rMin);
           float y = aSeed.z * thickness * (0.4 + 0.6 * sin(angle * 2.0 + aSeed.w * 6.28));
@@ -792,15 +820,17 @@
           vec2 bhProj = vec2(xCam, yCam) / zCam;
           float bProj = length(bhProj) * bhDist;
 
-          if (zCam > bhDist) {
-            if (bProj < 1.30) {
-              gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-              gl_PointSize = 0.0;
-              vAlpha = 0.0;
-              return;
-            }
-            // 引力透镜：黑洞后方的粒子沿径向外推抬升
-            float lensPush = (0.80 * uGravity) / max(bProj * bProj, 0.5);
+          if (zCam > bhDist && bProj < 1.30) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            gl_PointSize = 0.0;
+            vAlpha = 0.0;
+            return;
+          }
+
+          // 引力透镜：黑洞后方的粒子平滑过渡径向外推抬升，避免越过侧边时突变跳动
+          float behindWeight = smoothstep(bhDist - 0.6, bhDist + 1.2, zCam);
+          if (behindWeight > 0.001) {
+            float lensPush = (0.80 * uGravity) * behindWeight / max(bProj * bProj, 0.5);
             vec2 dir2d = normalize(vec2(xCam, yCam) + vec2(1e-5));
             xCam += dir2d.x * lensPush * zCam * 0.45;
             yCam += dir2d.y * lensPush * zCam * 0.45;
@@ -854,18 +884,23 @@
       // 4. 泛光：亮度提取 + 可分离高斯模糊
       // ============================================================
       const FS_BRIGHT = `
+        #ifdef GL_FRAGMENT_PRECISION_HIGH
+        precision highp float;
+        #else
         precision mediump float;
+        #endif
         uniform sampler2D uScene;
         uniform vec2 uTexel;
         uniform float uThreshold;
         varying vec2 vUv;
 
         void main() {
+          // 1/4 分辨率降采样：±1.0 场景 texel 利用双线性过滤完整覆盖 4×4 区域，消除细亮环闪烁
           vec3 c = vec3(0.0);
-          c += texture2D(uScene, vUv + uTexel * vec2(-0.5, -0.5)).rgb;
-          c += texture2D(uScene, vUv + uTexel * vec2( 0.5, -0.5)).rgb;
-          c += texture2D(uScene, vUv + uTexel * vec2(-0.5,  0.5)).rgb;
-          c += texture2D(uScene, vUv + uTexel * vec2( 0.5,  0.5)).rgb;
+          c += texture2D(uScene, vUv + uTexel * vec2(-1.0, -1.0)).rgb;
+          c += texture2D(uScene, vUv + uTexel * vec2( 1.0, -1.0)).rgb;
+          c += texture2D(uScene, vUv + uTexel * vec2(-1.0,  1.0)).rgb;
+          c += texture2D(uScene, vUv + uTexel * vec2( 1.0,  1.0)).rgb;
           c *= 0.25;
 
           float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -875,7 +910,11 @@
       `;
 
       const FS_BLUR = `
+        #ifdef GL_FRAGMENT_PRECISION_HIGH
+        precision highp float;
+        #else
         precision mediump float;
+        #endif
         uniform sampler2D uTex;
         uniform vec2 uDir;
         varying vec2 vUv;
@@ -905,7 +944,11 @@
       // 5. 合成：ACES 色调映射 + 泛光 + 暗角 + 胶片颗粒
       // ============================================================
       const FS_COMPOSITE = `
+        #ifdef GL_FRAGMENT_PRECISION_HIGH
+        precision highp float;
+        #else
         precision mediump float;
+        #endif
         uniform sampler2D uScene;
         uniform sampler2D uBloom;
         uniform float uBloomStrength;
@@ -926,17 +969,19 @@
         }
 
         float hash(vec2 p) {
-          return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+          vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+          p3 += dot(p3, p3.yzx + 33.33);
+          return fract((p3.x + p3.y) * p3.z);
         }
 
         void main() {
-          // 超采样降采样：4 点旋转网格，等效面积平均，消除视界边缘锯齿
+          // 超采样降采样：4 点旋转网格（RGSS），对视界边缘与环纹斜边抗锯齿更优
           vec3 sceneCol;
           if (uSSAA > 1.15) {
-            sceneCol  = texture2D(uScene, vUv + uDispTexel * vec2(-0.25, -0.25)).rgb;
-            sceneCol += texture2D(uScene, vUv + uDispTexel * vec2( 0.25, -0.25)).rgb;
-            sceneCol += texture2D(uScene, vUv + uDispTexel * vec2(-0.25,  0.25)).rgb;
-            sceneCol += texture2D(uScene, vUv + uDispTexel * vec2( 0.25,  0.25)).rgb;
+            sceneCol  = texture2D(uScene, vUv + uDispTexel * vec2(-0.375, -0.125)).rgb;
+            sceneCol += texture2D(uScene, vUv + uDispTexel * vec2( 0.125, -0.375)).rgb;
+            sceneCol += texture2D(uScene, vUv + uDispTexel * vec2(-0.125,  0.375)).rgb;
+            sceneCol += texture2D(uScene, vUv + uDispTexel * vec2( 0.375,  0.125)).rgb;
             sceneCol *= 0.25;
           } else {
             sceneCol = texture2D(uScene, vUv).rgb;
@@ -983,7 +1028,7 @@
         return s;
       }
 
-      function createProgram(vsSrc, fsSrc, label) {
+      function createProgram(vsSrc, fsSrc, label, attribName) {
         const vs = compileShader(gl.VERTEX_SHADER, vsSrc);
         const fs = compileShader(gl.FRAGMENT_SHADER, fsSrc);
         if (!vs || !fs) {
@@ -993,6 +1038,7 @@
         const prog = gl.createProgram();
         gl.attachShader(prog, vs);
         gl.attachShader(prog, fs);
+        if (attribName) gl.bindAttribLocation(prog, 0, attribName);
         gl.linkProgram(prog);
         if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
           console.error("Program link error (" + label + "):\n" + gl.getProgramInfoLog(prog));
@@ -1005,11 +1051,11 @@
         return gl.getUniformLocation(prog, name);
       }
 
-      const sceneProg = createProgram(VS_QUAD, FS_SCENE, "scene");
-      const ptProg = createProgram(VS_PARTICLE, FS_PARTICLE, "particle");
-      const brightProg = createProgram(VS_QUAD, FS_BRIGHT, "bright");
-      const blurProg = createProgram(VS_QUAD, FS_BLUR, "blur");
-      const compProg = createProgram(VS_QUAD, FS_COMPOSITE, "composite");
+      const sceneProg = createProgram(VS_QUAD, FS_SCENE, "scene", "aPos");
+      const ptProg = createProgram(VS_PARTICLE, FS_PARTICLE, "particle", "aSeed");
+      const brightProg = createProgram(VS_QUAD, FS_BRIGHT, "bright", "aPos");
+      const blurProg = createProgram(VS_QUAD, FS_BLUR, "blur", "aPos");
+      const compProg = createProgram(VS_QUAD, FS_COMPOSITE, "composite", "aPos");
 
       if (!sceneProg || !ptProg || !brightProg || !blurProg || !compProg) {
         document.body.innerHTML = "<div style='padding:40px;color:#fff;text-align:center;'>着色器编译失败，请查看控制台日志。</div>";
@@ -1021,10 +1067,10 @@
           aPos: gl.getAttribLocation(sceneProg, "aPos"),
           uRes: u(sceneProg, "uRes"),
           uTime: u(sceneProg, "uTime"),
+          uSpinTime: u(sceneProg, "uSpinTime"),
           uCamPos: u(sceneProg, "uCamPos"),
           uCamMat: u(sceneProg, "uCamMat"),
           uGravity: u(sceneProg, "uGravity"),
-          uSpin: u(sceneProg, "uSpin"),
           uDoppler: u(sceneProg, "uDoppler"),
           uColOuter: u(sceneProg, "uColOuter"),
           uColMid: u(sceneProg, "uColMid"),
@@ -1034,11 +1080,11 @@
         pt: {
           aSeed: gl.getAttribLocation(ptProg, "aSeed"),
           uRes: u(ptProg, "uRes"),
-          uTime: u(ptProg, "uTime"),
+          uSpinTime: u(ptProg, "uSpinTime"),
+          uFallTime: u(ptProg, "uFallTime"),
           uCamPos: u(ptProg, "uCamPos"),
           uCamMat: u(ptProg, "uCamMat"),
           uGravity: u(ptProg, "uGravity"),
-          uSpin: u(ptProg, "uSpin"),
           uDoppler: u(ptProg, "uDoppler"),
           uColOuter: u(ptProg, "uColOuter"),
           uColMid: u(ptProg, "uColMid"),
@@ -1118,32 +1164,118 @@
       // 自适应渲染倍率（仅在性能不足时下调，强 GPU 上保持满血）
       let renderScale = 1.0;
       let downscaleCount = 0;
+      const maxTexSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) || 4096;
+      const QUALITY_SCALES = { ultra: 2.0, balanced: 1.4, eco: 1.0 };
+
+      // ============================================================
+      // 9. 相机与状态（含本地偏好持久化与 URL 参数覆盖）
+      // ============================================================
+      const DEFAULT_ROLL_DEG = -18;
+      const DEFAULT_ROLL_RAD = DEFAULT_ROLL_DEG * Math.PI / 180;
+      const STORAGE_KEY = "gargantua3d.prefs.v1";
+
+      const state = {
+        yaw: 0.45,
+        pitch: 0.32,
+        dist: 11.5,
+        targetYaw: 0.45,
+        targetPitch: 0.32,
+        targetDist: 11.5,
+        roll: DEFAULT_ROLL_RAD,
+        targetRoll: DEFAULT_ROLL_RAD,
+        particleDensity: 1.0,
+        fluidDensity: 0.8,
+        bloom: 1.1,
+        gravity: 1.0,
+        spin: 1.0,
+        doppler: 0.75,
+        theme: 0,
+        cycle: 60,
+        quality: "auto",
+        autoOrbit: true
+      };
+
+      const searchParams = new URLSearchParams(location.search);
+      const wallpaperMode = searchParams.get("wallpaper") === "1";
+
+      function loadPreferences() {
+        try {
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            const p = JSON.parse(raw);
+            const numKeys = ["particleDensity", "fluidDensity", "bloom", "gravity", "spin", "doppler", "theme", "cycle"];
+            numKeys.forEach((k) => {
+              if (typeof p[k] === "number" && Number.isFinite(p[k])) state[k] = p[k];
+            });
+            if (typeof p.rollDeg === "number" && Number.isFinite(p.rollDeg)) {
+              state.roll = state.targetRoll = p.rollDeg * Math.PI / 180;
+            }
+            if (typeof p.autoOrbit === "boolean") state.autoOrbit = p.autoOrbit;
+            if (p.quality === "auto" || QUALITY_SCALES[p.quality]) state.quality = p.quality;
+          }
+        } catch (_) {}
+
+        // URL 参数可按需覆盖配置（便于壁纸/分享链接定制）
+        const qTheme = parseInt(searchParams.get("theme"), 10);
+        if (qTheme >= 0 && qTheme <= 3) state.theme = qTheme;
+        const qCycle = parseFloat(searchParams.get("cycle"));
+        if (Number.isFinite(qCycle)) state.cycle = Math.max(20, Math.min(300, qCycle));
+        const qRoll = parseFloat(searchParams.get("roll"));
+        if (Number.isFinite(qRoll)) {
+          const clamped = Math.max(-70, Math.min(70, qRoll));
+          state.roll = state.targetRoll = clamped * Math.PI / 180;
+        }
+        const qQuality = searchParams.get("quality");
+        if (qQuality === "auto" || QUALITY_SCALES[qQuality]) state.quality = qQuality;
+      }
+
+      function savePreferences() {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify({
+            particleDensity: state.particleDensity,
+            fluidDensity: state.fluidDensity,
+            bloom: state.bloom,
+            rollDeg: Math.round(state.targetRoll * 180 / Math.PI),
+            gravity: state.gravity,
+            spin: state.spin,
+            doppler: state.doppler,
+            theme: state.theme,
+            cycle: state.cycle,
+            quality: state.quality,
+            autoOrbit: state.autoOrbit
+          }));
+        } catch (_) {}
+      }
+
+      loadPreferences();
 
       function computeRenderSize() {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        let dw = Math.floor(window.innerWidth * dpr);
-        let dh = Math.floor(window.innerHeight * dpr);
+        let dw = Math.max(1, Math.floor(window.innerWidth * dpr));
+        let dh = Math.max(1, Math.floor(window.innerHeight * dpr));
 
         // 显示分辨率像素预算（约 4K）
         const BUDGET = 9.0e6;
         if (dw * dh > BUDGET) {
           const k = Math.sqrt(BUDGET / (dw * dh));
-          dw = Math.floor(dw * k);
-          dh = Math.floor(dh * k);
+          dw = Math.max(1, Math.floor(dw * k));
+          dh = Math.max(1, Math.floor(dh * k));
         }
 
-        // 超采样抗锯齿：渲染分辨率高于显示分辨率，合成时降采样
-        // 渲染像素总量控制在约 1200 万以内（1080p 可达 2x，4K 约 1.2x）
-        ssaaRatio = Math.max(1.0, Math.min(2.0, Math.sqrt(12.0e6 / Math.max(dw * dh, 1))));
-        ssaaRatio *= renderScale;
+        // 超采样抗锯齿：渲染分辨率高于显示分辨率，合成时 RGSS 降采样
+        if (state.quality === "auto") {
+          ssaaRatio = Math.max(1.0, Math.min(2.0, Math.sqrt(12.0e6 / Math.max(dw * dh, 1)))) * renderScale;
+        } else {
+          ssaaRatio = QUALITY_SCALES[state.quality] || 1.0;
+        }
 
         canvas.width = dw;
         canvas.height = dh;
         displayW = dw;
         displayH = dh;
 
-        renderW = Math.max(320, Math.floor(dw * ssaaRatio));
-        renderH = Math.max(180, Math.floor(dh * ssaaRatio));
+        renderW = Math.min(maxTexSize, Math.max(320, Math.floor(dw * ssaaRatio)));
+        renderH = Math.min(maxTexSize, Math.max(180, Math.floor(dh * ssaaRatio)));
         // 实际倍率（取整后重新计算，保证采样偏移准确）
         ssaaRatio = renderW / dw;
 
@@ -1166,28 +1298,6 @@
 
       window.addEventListener("resize", computeRenderSize);
       computeRenderSize();
-
-      // ============================================================
-      // 9. 相机与状态
-      // ============================================================
-      const state = {
-        yaw: 0.45,
-        pitch: 0.32,
-        dist: 11.5,
-        targetYaw: 0.45,
-        targetPitch: 0.32,
-        targetDist: 11.5,
-        roll: -0.32,
-        particleDensity: 1.0,
-        fluidDensity: 0.8,
-        bloom: 1.1,
-        gravity: 1.0,
-        spin: 1.0,
-        doppler: 0.75,
-        theme: 0,
-        cycle: 60,
-        autoOrbit: true
-      };
 
       let isDragging = false;
       let lastX = 0;
@@ -1272,6 +1382,7 @@
           const val = parseFloat(e.target.value);
           state[key] = val;
           v.textContent = key === "spin" ? val.toFixed(digits) + "x" : val.toFixed(digits);
+          savePreferences();
         });
       });
 
@@ -1279,30 +1390,75 @@
       const valRoll = el("valRoll");
       sliderRoll.addEventListener("input", (e) => {
         const deg = parseFloat(e.target.value);
-        state.roll = deg * Math.PI / 180;
+        state.targetRoll = deg * Math.PI / 180;
         valRoll.textContent = deg.toFixed(0) + "°";
+        savePreferences();
       });
 
+      const rowCycle = el("rowCycle");
       const sliderCycle = el("sliderCycle");
       const valCycle = el("valCycle");
       sliderCycle.addEventListener("input", (e) => {
         state.cycle = parseFloat(e.target.value);
         valCycle.textContent = state.cycle.toFixed(0) + "s";
+        savePreferences();
       });
 
-      document.querySelectorAll(".pill-btn").forEach((btn) => {
+      const themeBtns = document.querySelectorAll(".pill-btn[data-theme]");
+      themeBtns.forEach((btn) => {
         btn.addEventListener("click", () => {
-          document.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("active"));
-          btn.classList.add("active");
           state.theme = parseFloat(btn.dataset.theme);
+          syncThemeUi();
+          lastAccentUpdate = -1; // 立即同步强调色
+          savePreferences();
+        });
+      });
+
+      const qualityBtns = document.querySelectorAll(".pill-btn[data-quality]");
+      qualityBtns.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.quality = btn.dataset.quality;
+          renderScale = 1.0;
+          downscaleCount = 0;
+          lowFpsStreak = 0;
+          highFpsStreak = 0;
+          syncQualityUi();
+          computeRenderSize();
+          savePreferences();
         });
       });
 
       const switchOrbit = el("switchOrbit");
-      switchOrbit.addEventListener("click", () => {
+      function toggleAutoOrbit() {
         state.autoOrbit = !state.autoOrbit;
         switchOrbit.classList.toggle("on", state.autoOrbit);
-      });
+        savePreferences();
+      }
+      switchOrbit.addEventListener("click", toggleAutoOrbit);
+
+      function syncThemeUi() {
+        themeBtns.forEach((b) => b.classList.toggle("active", parseFloat(b.dataset.theme) === state.theme));
+        rowCycle.classList.toggle("disabled", state.theme !== 3);
+      }
+
+      function syncQualityUi() {
+        qualityBtns.forEach((b) => b.classList.toggle("active", b.dataset.quality === state.quality));
+      }
+
+      function syncUiFromState() {
+        sliders.forEach(([sid, vid, key, digits]) => {
+          el(sid).value = state[key];
+          el(vid).textContent = key === "spin" ? state[key].toFixed(digits) + "x" : state[key].toFixed(digits);
+        });
+        const rollDeg = Math.round(state.targetRoll * 180 / Math.PI);
+        sliderRoll.value = rollDeg;
+        valRoll.textContent = rollDeg.toFixed(0) + "°";
+        sliderCycle.value = state.cycle;
+        valCycle.textContent = state.cycle.toFixed(0) + "s";
+        switchOrbit.classList.toggle("on", state.autoOrbit);
+        syncThemeUi();
+        syncQualityUi();
+      }
 
       const controlPanel = el("controlPanel");
       const hudHeader = el("hudHeader");
@@ -1327,7 +1483,6 @@
       });
 
       // 壁纸模式：?wallpaper=1 -> 全部 UI 收起，纯画面露出
-      const wallpaperMode = new URLSearchParams(location.search).get("wallpaper") === "1";
       if (wallpaperMode) {
         uiHidden = true;
         setUiVisible(false);
@@ -1351,11 +1506,32 @@
         window.addEventListener(evt, markActivity, { passive: true });
       });
 
-      el("resetCamBtn").addEventListener("click", () => {
+      function resetCamera() {
         state.targetYaw = 0.45;
         state.targetPitch = 0.32;
         state.targetDist = 11.5;
-        state.roll = -0.32;
+        state.targetRoll = DEFAULT_ROLL_RAD;
+        sliderRoll.value = DEFAULT_ROLL_DEG;
+        valRoll.textContent = DEFAULT_ROLL_DEG + "°";
+        savePreferences();
+      }
+
+      el("resetCamBtn").addEventListener("click", resetCamera);
+
+      window.addEventListener("keydown", (e) => {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        markActivity();
+        const k = e.key.toLowerCase();
+        if (k === "h" && !wallpaperMode) {
+          uiHidden = !uiHidden;
+          autoHidden = false;
+          setUiVisible(!uiHidden);
+        } else if (k === "r") {
+          resetCamera();
+        } else if (e.code === "Space" && e.target.tagName !== "BUTTON") {
+          e.preventDefault();
+          toggleAutoOrbit();
+        }
       });
 
       // ============================================================
@@ -1509,13 +1685,63 @@
       let lastFrame = startTime;
       let frames = 0;
       let fpsTime = startTime;
+      let lowFpsStreak = 0;
+      let highFpsStreak = 0;
+      let spinPhase = 0;
+      let fallPhase = 0;
+      let lastAccentUpdate = -1;
+      let rafId = 0;
+      let contextLost = false;
       const fpsBadge = el("fpsBadge");
+      const rootStyle = document.documentElement.style;
+
+      function updateAccentColor(pal, now) {
+        if (lastAccentUpdate >= 0 && now - lastAccentUpdate < 120) return;
+        lastAccentUpdate = now;
+        const mid = pal[1];
+        const toSrgb = (c) => Math.round(Math.pow(Math.max(0, Math.min(1, c)), 1 / 2.2) * 255);
+        const r = toSrgb(mid[0]);
+        const g = toSrgb(mid[1]);
+        const b = toSrgb(mid[2]);
+        rootStyle.setProperty("--accent", `rgb(${r}, ${g}, ${b})`);
+        rootStyle.setProperty("--accent-soft", `rgba(${r}, ${g}, ${b}, 0.20)`);
+        rootStyle.setProperty("--accent-glow", `rgba(${r}, ${g}, ${b}, 0.38)`);
+      }
+
+      syncUiFromState();
+
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) {
+          const t = performance.now();
+          lastFrame = t;
+          fpsTime = t;
+          frames = 0;
+          lowFpsStreak = 0;
+          highFpsStreak = 0;
+        }
+      });
+
+      canvas.addEventListener("webglcontextlost", (e) => {
+        e.preventDefault();
+        contextLost = true;
+        if (rafId) cancelAnimationFrame(rafId);
+        fpsBadge.textContent = "GPU 暂停";
+      });
+
+      canvas.addEventListener("webglcontextrestored", () => {
+        location.reload();
+      });
 
       function render(now) {
+        if (contextLost) return;
         const dt = Math.min((now - lastFrame) * 0.001, 0.1);
         lastFrame = now;
         const elapsed = (now - startTime) * 0.001;
+        spinPhase += dt * state.spin;
+        fallPhase = (fallPhase + dt * 0.030 * (0.4 + 0.6 * state.spin)) % 1.0;
+
         const pal = computePalette(elapsed);
+        updateAccentColor(pal, now);
 
         if (state.autoOrbit && !isDragging) {
           state.targetYaw += dt * 0.12;
@@ -1525,6 +1751,15 @@
         state.yaw += (state.targetYaw - state.yaw) * damp;
         state.pitch += (state.targetPitch - state.pitch) * damp;
         state.dist += (state.targetDist - state.dist) * damp;
+        state.roll += (state.targetRoll - state.roll) * damp;
+
+        // 长时巡航防浮点漂移：同步回卷 yaw 与 targetYaw
+        const TWO_PI = Math.PI * 2.0;
+        if (Math.abs(state.yaw) > TWO_PI * 10.0) {
+          const wrap = Math.trunc(state.yaw / TWO_PI) * TWO_PI;
+          state.yaw -= wrap;
+          state.targetYaw -= wrap;
+        }
 
         const cp = Math.cos(state.pitch);
         const camPos = [
@@ -1544,10 +1779,10 @@
         gl.useProgram(sceneProg);
         gl.uniform2f(L.scene.uRes, renderW, renderH);
         gl.uniform1f(L.scene.uTime, elapsed);
+        gl.uniform1f(L.scene.uSpinTime, spinPhase);
         gl.uniform3f(L.scene.uCamPos, camPos[0], camPos[1], camPos[2]);
         gl.uniformMatrix3fv(L.scene.uCamMat, false, camMat);
         gl.uniform1f(L.scene.uGravity, state.gravity);
-        gl.uniform1f(L.scene.uSpin, state.spin);
         gl.uniform1f(L.scene.uDoppler, state.doppler);
         gl.uniform3f(L.scene.uColOuter, pal[0][0], pal[0][1], pal[0][2]);
         gl.uniform3f(L.scene.uColMid, pal[1][0], pal[1][1], pal[1][2]);
@@ -1565,11 +1800,11 @@
           gl.vertexAttribPointer(L.pt.aSeed, 4, gl.FLOAT, false, 0, 0);
 
           gl.uniform2f(L.pt.uRes, renderW, renderH);
-          gl.uniform1f(L.pt.uTime, elapsed);
+          gl.uniform1f(L.pt.uSpinTime, spinPhase);
+          gl.uniform1f(L.pt.uFallTime, fallPhase);
           gl.uniform3f(L.pt.uCamPos, camPos[0], camPos[1], camPos[2]);
           gl.uniformMatrix3fv(L.pt.uCamMat, false, camMat);
           gl.uniform1f(L.pt.uGravity, state.gravity);
-          gl.uniform1f(L.pt.uSpin, state.spin);
           gl.uniform1f(L.pt.uDoppler, state.doppler);
           gl.uniform3f(L.pt.uColOuter, pal[0][0], pal[0][1], pal[0][2]);
           gl.uniform3f(L.pt.uColMid, pal[1][0], pal[1][1], pal[1][2]);
@@ -1632,7 +1867,7 @@
 
         gl.uniform1f(L.comp.uBloomStrength, state.bloom);
         gl.uniform1f(L.comp.uExposure, 1.00);
-        gl.uniform1f(L.comp.uTime, elapsed);
+        gl.uniform1f(L.comp.uTime, elapsed % 100.0);
         gl.uniform2f(L.comp.uRes, displayW, displayH);
         gl.uniform1f(L.comp.uSSAA, ssaaRatio);
         gl.uniform2f(L.comp.uDispTexel, 1.0 / displayW, 1.0 / displayH);
@@ -1645,26 +1880,46 @@
           setUiVisible(false);
         }
 
-        // ---------- FPS 统计与自适应降级 ----------
+        // ---------- FPS 统计与自适应升降级 ----------
         frames++;
-        if (now - fpsTime >= 500) {
-          const fps = Math.round((frames * 1000) / (now - fpsTime));
+        const sampleDt = now - fpsTime;
+        if (sampleDt >= 500) {
+          const fps = Math.round((frames * 1000) / sampleDt);
           fpsBadge.textContent = fps + " FPS";
           frames = 0;
           fpsTime = now;
 
-          // 只在真的吃力时降一档分辨率，绝不牺牲画质上限
-          if (fps < 32 && renderScale > 0.6 && downscaleCount < 3) {
-            renderScale *= 0.8;
-            downscaleCount++;
-            computeRenderSize();
+          // 忽略切后台/休眠造成的单次长间隔；仅在自动画质档动态调节
+          if (state.quality === "auto" && sampleDt < 1500) {
+            if (fps < 32) {
+              lowFpsStreak++;
+              highFpsStreak = 0;
+              if (lowFpsStreak >= 2 && renderScale > 0.6 && downscaleCount < 3) {
+                renderScale *= 0.8;
+                downscaleCount++;
+                lowFpsStreak = 0;
+                computeRenderSize();
+              }
+            } else if (fps >= 56) {
+              highFpsStreak++;
+              lowFpsStreak = 0;
+              if (highFpsStreak >= 6 && downscaleCount > 0) {
+                renderScale = Math.min(1.0, renderScale / 0.8);
+                downscaleCount--;
+                highFpsStreak = 0;
+                computeRenderSize();
+              }
+            } else {
+              lowFpsStreak = 0;
+              highFpsStreak = 0;
+            }
           }
         }
 
-        requestAnimationFrame(render);
+        rafId = requestAnimationFrame(render);
       }
 
-      requestAnimationFrame(render);
+      rafId = requestAnimationFrame(render);
     })();
   </script>
 </body>
