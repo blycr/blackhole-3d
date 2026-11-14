@@ -4,6 +4,8 @@
 
 > 打开 `index.html` 即可运行，不需要打包、不需要联网、不需要任何框架。
 
+**[▶ 在线预览](https://blycr.github.io/blackhole-3d/)** · **[🖼 壁纸模式（无 UI）](https://blycr.github.io/blackhole-3d/?wallpaper=1)**
+
 ![预览：自动渐变「品红」相位，1920×1080 实机截图](docs/preview.jpg)
 
 <p align="center"><em>自动渐变第 ④ 帧「品红」相位 · 1920×1080 实机截图</em></p>
@@ -76,6 +78,13 @@ timeline
 ---
 
 ## 快速开始
+
+### 方式零：在线直接看
+
+- 普通模式：<https://blycr.github.io/blackhole-3d/>
+- 壁纸模式：<https://blycr.github.io/blackhole-3d/?wallpaper=1>
+
+由 GitHub Pages 托管，图形计算全部在你的显卡上完成（纯静态页面）。
 
 ### 方式一：直接打开
 
@@ -508,6 +517,7 @@ blackhole-3d/
 ├── README.md     # 本文档
 ├── LICENSE       # MIT
 ├── .gitignore
+├── .nojekyll       # 关闭 Jekyll 处理，纯静态托管
 └── docs/
     └── preview.jpg  # 预览截图
 ```
