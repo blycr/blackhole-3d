@@ -314,7 +314,7 @@
       <span class="hud-dot"></span>
       <span>GARGANTUA · 3D</span>
     </div>
-    <div class="hud-sub">广义相对论引力透镜 · 流体等离子体 + 5,000 颗吸积粒子</div>
+    <div class="hud-sub">广义相对论引力透镜 · 流体等离子体 + 25,000 颗吸积粒子</div>
   </header>
 
   <div class="top-actions">
@@ -764,11 +764,11 @@
           float lifeFade = smoothstep(0.0, 0.08, life) * (1.0 - smoothstep(0.86, 1.0, life));
 
           vColor = getParticlePalette(temp, shift);
-          vAlpha = lifeFade * beaming * (0.28 + 0.72 * temp) * uParticleDensity;
+          vAlpha = lifeFade * beaming * (0.22 + 0.65 * temp) * 0.52 * uParticleDensity;
 
-          // 粒子像素大小随距离与亮度缩放
-          float baseSize = mix(2.2, 5.8, aSeed.w) * (11.5 / max(zCam, 2.0));
-          gl_PointSize = clamp(baseSize * (minRes / 900.0 + 0.35), 1.5, 11.0);
+          // 粒子像素大小更细小精致，随距离缩放
+          float baseSize = mix(0.9, 2.5, pow(aSeed.w, 1.4)) * (11.5 / max(zCam, 2.0));
+          gl_PointSize = clamp(baseSize * (minRes / 1000.0 + 0.25), 1.0, 4.2);
         }
       `;
 
@@ -782,9 +782,9 @@
           float d2 = dot(c, c);
           if (d2 > 0.25) discard;
 
-          // 柔和发光星点核心 + 光晕
-          float core = exp(-d2 * 18.0);
-          float halo = exp(-d2 * 6.5) * 0.45;
+          // 更锐利的星尘核心 + 轻微柔光晕
+          float core = exp(-d2 * 28.0);
+          float halo = exp(-d2 * 10.0) * 0.28;
           float glow = (core + halo) * vAlpha;
 
           gl_FragColor = vec4(vColor * glow, glow);
@@ -837,8 +837,8 @@
         uFluidDensity: gl.getUniformLocation(bgProg, "uFluidDensity")
       };
 
-      // 初始化 5,000 颗吸积粒子程序
-      const PARTICLE_COUNT = 5000;
+      // 初始化 25,000 颗吸积粒子程序
+      const PARTICLE_COUNT = 25000;
       const ptProg = createProgram(ptVsSource, ptFsSource);
       const ptData = new Float32Array(PARTICLE_COUNT * 4);
       for (let i = 0; i < PARTICLE_COUNT; i++) {
@@ -1099,7 +1099,7 @@
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-        // Pass 2: 叠加 5,000 颗 3D 螺旋吸积粒子（加法混合）
+        // Pass 2: 叠加 25,000 颗 3D 螺旋吸积粒子（加法混合）
         if (state.particleDensity > 0.01) {
           gl.enable(gl.BLEND);
           gl.blendFunc(gl.ONE, gl.ONE);
