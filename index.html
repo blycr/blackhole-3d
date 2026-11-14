@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>Gargantua 3D — 广义相对论黑洞可视化</title>
+  <title>Gargantua 3D — 广义相对论黑洞与吸积粒子</title>
   <style>
     :root {
       --bg-glass: rgba(12, 14, 22, 0.58);
@@ -43,7 +43,6 @@
       cursor: grabbing;
     }
 
-    /* 顶部标题栏 */
     .hud-header {
       position: fixed;
       top: 20px;
@@ -90,7 +89,6 @@
       letter-spacing: 0.04em;
     }
 
-    /* 右上角快捷按钮 */
     .top-actions {
       position: fixed;
       top: 20px;
@@ -121,12 +119,11 @@
       border-color: rgba(255, 255, 255, 0.28);
     }
 
-    /* 控制面板 */
     .control-panel {
       position: fixed;
       right: 24px;
       bottom: 24px;
-      width: 300px;
+      width: 308px;
       max-width: calc(100vw - 48px);
       background: var(--bg-glass);
       backdrop-filter: blur(20px);
@@ -163,7 +160,7 @@
     }
 
     .control-row {
-      margin-bottom: 12px;
+      margin-bottom: 11px;
     }
 
     .control-row:last-child {
@@ -273,7 +270,6 @@
       transform: translateX(16px);
     }
 
-    /* 底部操作提示 */
     .hint-bar {
       position: fixed;
       left: 24px;
@@ -318,7 +314,7 @@
       <span class="hud-dot"></span>
       <span>GARGANTUA · 3D</span>
     </div>
-    <div class="hud-sub">实时零测地线光线追踪 · 引力透镜与吸积盘</div>
+    <div class="hud-sub">广义相对论引力透镜 · 流体等离子体 + 5,000 颗吸积粒子</div>
   </header>
 
   <div class="top-actions">
@@ -332,8 +328,24 @@
 
   <aside class="control-panel" id="controlPanel">
     <div class="panel-section-title">
-      <span>天体物理参数</span>
+      <span>天体物理与粒子参数</span>
       <span class="fps-badge" id="fpsBadge">60 FPS</span>
+    </div>
+
+    <div class="control-row">
+      <div class="control-label">
+        <span>吸积粒子浓度</span>
+        <span class="control-val" id="valParticle">1.00</span>
+      </div>
+      <input type="range" id="sliderParticle" min="0.0" max="1.8" step="0.05" value="1.0" />
+    </div>
+
+    <div class="control-row">
+      <div class="control-label">
+        <span>气体流体浓度</span>
+        <span class="control-val" id="valFluid">0.80</span>
+      </div>
+      <input type="range" id="sliderFluid" min="0.0" max="1.5" step="0.05" value="0.8" />
     </div>
 
     <div class="control-row">
@@ -391,16 +403,17 @@
         return;
       }
 
-      const vsSource = `
+      // ==========================================
+      // 1. 背景 + 引力透镜流体吸积盘着色器
+      // ==========================================
+      const bgVsSource = `
         attribute vec2 aPos;
-        varying vec2 vUv;
         void main() {
-          vUv = aPos * 0.5 + 0.5;
           gl_Position = vec4(aPos, 0.0, 1.0);
         }
       `;
 
-      const fsSource = `
+      const bgFsSource = `
         precision highp float;
 
         uniform vec2 uRes;
@@ -411,8 +424,8 @@
         uniform float uSpin;
         uniform float uDoppler;
         uniform float uTheme;
+        uniform float uFluidDensity;
 
-        // 哈希与三维噪声函数
         float hash31(vec3 p) {
           p = fract(p * 0.1031);
           p += dot(p, p.yzx + 33.33);
@@ -450,23 +463,18 @@
           return v;
         }
 
-        // 主题调色板
         vec3 getDiskPalette(float temp, float shift) {
-          // temp: 0(外缘冷) -> 1(内缘极热)
           vec3 outerCol, midCol, innerCol;
 
           if (uTheme < 0.5) {
-            // 经典卡冈图雅金橙
             outerCol = vec3(0.45, 0.09, 0.02);
             midCol   = vec3(1.00, 0.48, 0.10);
             innerCol = vec3(1.00, 0.92, 0.78);
           } else if (uTheme < 1.5) {
-            // 蓝巨星等离子
             outerCol = vec3(0.05, 0.14, 0.45);
             midCol   = vec3(0.18, 0.62, 1.00);
             innerCol = vec3(0.85, 0.96, 1.00);
           } else {
-            // 深渊紫曜
             outerCol = vec3(0.28, 0.04, 0.35);
             midCol   = vec3(0.88, 0.25, 0.72);
             innerCol = vec3(1.00, 0.86, 0.98);
@@ -475,26 +483,22 @@
           vec3 col = mix(outerCol, midCol, smoothstep(0.0, 0.55, temp));
           col = mix(col, innerCol, smoothstep(0.5, 1.0, temp));
 
-          // 相对论多普勒色移：迎面略偏冷白，远离略偏深红
           vec3 blueShift = mix(col, vec3(0.85, 0.93, 1.0), 0.35);
           vec3 redShift  = col * vec3(1.15, 0.65, 0.45);
           col = mix(col, shift > 0.0 ? blueShift : redShift, clamp(abs(shift) * 0.6, 0.0, 1.0));
           return col;
         }
 
-        // 程序化深空背景（含星云与多层次恒星）
         vec3 sampleSpace(vec3 dir) {
           vec3 d = normalize(dir);
           vec3 col = vec3(0.008, 0.010, 0.018);
 
-          // 银河带状星云
           float band = exp(-pow(d.y * 2.6 + d.x * 0.6, 2.0) * 2.4);
           float neb1 = fbm(d * 3.8 + vec3(1.2, 3.4, 0.7));
           float neb2 = fbm(d * 7.5 - vec3(2.1, 0.4, 4.2));
           vec3 nebCol = mix(vec3(0.04, 0.07, 0.16), vec3(0.16, 0.09, 0.22), neb2);
           col += nebCol * band * smoothstep(0.32, 0.85, neb1) * 0.95;
 
-          // 远景恒星层 1
           vec3 grid1 = floor(d * 210.0);
           float s1 = hash31(grid1);
           if (s1 > 0.991) {
@@ -506,7 +510,6 @@
             col += starCol * star * (1.2 + 1.5 * fract(s1 * 137.0));
           }
 
-          // 远景恒星层 2（更密集的微弱星点）
           vec3 grid2 = floor(d * 380.0);
           float s2 = hash31(grid2 + 71.1);
           if (s2 > 0.994) {
@@ -519,7 +522,6 @@
           return col;
         }
 
-        // ACES Filmic 色调映射
         vec3 acesFilm(vec3 x) {
           float a = 2.51;
           float b = 0.03;
@@ -532,103 +534,91 @@
         void main() {
           vec2 uv = (gl_FragCoord.xy - 0.5 * uRes) / min(uRes.x, uRes.y);
 
-          // 相机光线
           vec3 ro = uCamPos;
           vec3 rd = normalize(uCamMat * normalize(vec3(uv, 1.45)));
 
           vec3 pos = ro;
           vec3 vel = rd;
 
-          // 史瓦西半径
           float rs = 1.0;
           float diskInner = 1.55;
           float diskOuter = 6.8;
 
-          // 光线角动量平方 h^2 = |r x v|^2
           vec3 L = cross(pos, vel);
           float h2 = dot(L, L);
 
           vec3 accumColor = vec3(0.0);
           float transmittance = 1.0;
           bool absorbed = false;
-
           float minR = 100.0;
 
-          // 广义相对论零测地线光线步进
-          const int STEPS = 110;
+          const int STEPS = 105;
           for (int i = 0; i < STEPS; i++) {
             float r = length(pos);
             minR = min(minR, r);
 
-            // 坠入事件视界
             if (r < rs * 1.01) {
               absorbed = true;
               break;
             }
 
-            // 逃逸到远方星空
             if (r > 28.0 && dot(pos, vel) > 0.0) {
               break;
             }
 
-            // 自适应步长：靠近黑洞或赤道面时加密采样
-            float dt = clamp(r * 0.075, 0.035, 0.48);
+            float dt = clamp(r * 0.078, 0.035, 0.48);
             if (abs(pos.y) < 0.45 && r < diskOuter + 0.8) {
-              dt = min(dt, 0.065);
+              dt = min(dt, 0.068);
             }
 
-            // 精确史瓦西光线弯曲加速度: a = -1.5 * h^2 * r / r^5
             float r2 = r * r;
             float r5 = r2 * r2 * r;
             vec3 acc = -1.5 * uGravity * h2 * pos / max(r5, 0.0001);
 
-            // 速度半隐式欧拉积分
             vel = normalize(vel + acc * dt);
             vec3 nextPos = pos + vel * dt;
 
-            // 吸积盘体积密度采样（赤道面 y=0 附近）
-            float diskThickness = 0.065 + 0.028 * (r - diskInner);
-            float yDist = abs(pos.y);
+            if (uFluidDensity > 0.01) {
+              float diskThickness = 0.065 + 0.028 * (r - diskInner);
+              float yDist = abs(pos.y);
 
-            if (r > diskInner * 0.92 && r < diskOuter && yDist < diskThickness * 3.2) {
-              float radialFade = smoothstep(diskInner * 0.95, diskInner + 0.35, r) *
-                                 (1.0 - smoothstep(diskOuter - 1.4, diskOuter, r));
-              float verticalFade = exp(-pow(yDist / diskThickness, 2.0));
+              if (r > diskInner * 0.92 && r < diskOuter && yDist < diskThickness * 3.2) {
+                float radialFade = smoothstep(diskInner * 0.95, diskInner + 0.35, r) *
+                                   (1.0 - smoothstep(diskOuter - 1.4, diskOuter, r));
+                float verticalFade = exp(-pow(yDist / diskThickness, 2.0));
 
-              // 极坐标螺旋扭曲纹理
-              float angle = atan(pos.z, pos.x);
-              float omega = (2.6 / pow(r, 1.15)) * uSpin;
-              float swirl = angle + uTime * omega + 3.2 / sqrt(r);
+                float angle = atan(pos.z, pos.x);
+                float omega = (2.6 / pow(r, 1.15)) * uSpin;
+                float swirl = angle + uTime * omega + 3.2 / sqrt(r);
 
-              vec3 sampleCoord = vec3(
-                cos(swirl) * r * 0.85,
-                pos.y * 4.0,
-                sin(swirl) * r * 0.85
-              );
+                vec3 sampleCoord = vec3(
+                  cos(swirl) * r * 0.85,
+                  pos.y * 4.0,
+                  sin(swirl) * r * 0.85
+                );
 
-              float turb = fbm(sampleCoord * 1.4 + vec3(0.0, uTime * 0.15, 0.0));
-              float rings = 0.65 + 0.35 * sin(r * 7.5 - turb * 4.0);
-              float density = radialFade * verticalFade * smoothstep(0.22, 0.82, turb) * rings;
+                float turb = fbm(sampleCoord * 1.4 + vec3(0.0, uTime * 0.15, 0.0));
+                float rings = 0.65 + 0.35 * sin(r * 7.5 - turb * 4.0);
+                float density = radialFade * verticalFade * smoothstep(0.22, 0.82, turb) * rings * uFluidDensity;
 
-              if (density > 0.005) {
-                // 温度梯度：内圈更炽热
-                float temp = clamp(1.0 - (r - diskInner) / (diskOuter - diskInner), 0.0, 1.0);
-                temp = pow(temp, 0.72);
+                if (density > 0.004) {
+                  float temp = clamp(1.0 - (r - diskInner) / (diskOuter - diskInner), 0.0, 1.0);
+                  temp = pow(temp, 0.72);
 
-                // 气体切向速度方向（逆时针绕 Y 轴）
-                vec3 tangentVel = normalize(vec3(-pos.z, 0.0, pos.x));
-                float dopplerDot = dot(tangentVel, -vel);
-                float shift = dopplerDot * uDoppler;
-                float beaming = pow(clamp(1.0 + shift * 0.55, 0.28, 2.1), 2.1);
+                  vec3 tangentVel = normalize(vec3(-pos.z, 0.0, pos.x));
+                  float dopplerDot = dot(tangentVel, -vel);
+                  float shift = dopplerDot * uDoppler;
+                  float beaming = pow(clamp(1.0 + shift * 0.55, 0.28, 2.1), 2.1);
 
-                vec3 emitCol = getDiskPalette(temp, shift);
-                float intensity = density * beaming * (1.85 + 2.4 * temp) * dt * 5.2;
+                  vec3 emitCol = getDiskPalette(temp, shift);
+                  float intensity = density * beaming * (1.85 + 2.4 * temp) * dt * 5.0;
 
-                accumColor += transmittance * emitCol * intensity;
-                transmittance *= exp(-density * dt * 2.8);
+                  accumColor += transmittance * emitCol * intensity;
+                  transmittance *= exp(-density * dt * 2.6);
 
-                if (transmittance < 0.02) {
-                  break;
+                  if (transmittance < 0.02) {
+                    break;
+                  }
                 }
               }
             }
@@ -636,21 +626,168 @@
             pos = nextPos;
           }
 
-          // 光子环微弱辉光（贴近事件视界的光线多次绕行产生）
           float photonRing = exp(-pow((minR - 1.38 * rs) / 0.18, 2.0)) * 0.55;
           vec3 ringColor = getDiskPalette(0.92, 0.15);
           accumColor += transmittance * ringColor * photonRing;
 
-          // 如果未坠入黑洞，叠加弯曲后的背景星空
           if (!absorbed) {
             accumColor += transmittance * sampleSpace(vel);
           }
 
-          // 轻微电影感辉光与 ACES 色调映射
           vec3 finalCol = acesFilm(accumColor * 1.15);
           finalCol = pow(finalCol, vec3(1.0 / 2.2));
 
           gl_FragColor = vec4(finalCol, 1.0);
+        }
+      `;
+
+      // ==========================================
+      // 2. 3D 吸积物质粒子着色器（含开普勒螺旋、事件视界遮挡、引力透镜偏折）
+      // ==========================================
+      const ptVsSource = `
+        attribute vec4 aSeed; // x: 初始半径(0..1), y: 初始角度, z: 垂直偏移(-1..1), w: 粒子大小/相位
+
+        uniform vec2 uRes;
+        uniform float uTime;
+        uniform vec3 uCamPos;
+        uniform mat3 uCamMat;
+        uniform float uGravity;
+        uniform float uSpin;
+        uniform float uDoppler;
+        uniform float uTheme;
+        uniform float uParticleDensity;
+
+        varying vec3 vColor;
+        varying float vAlpha;
+
+        vec3 getParticlePalette(float temp, float shift) {
+          vec3 outerCol, midCol, innerCol;
+          if (uTheme < 0.5) {
+            outerCol = vec3(0.75, 0.22, 0.06);
+            midCol   = vec3(1.00, 0.62, 0.20);
+            innerCol = vec3(1.00, 0.96, 0.85);
+          } else if (uTheme < 1.5) {
+            outerCol = vec3(0.14, 0.32, 0.85);
+            midCol   = vec3(0.32, 0.78, 1.00);
+            innerCol = vec3(0.92, 0.98, 1.00);
+          } else {
+            outerCol = vec3(0.55, 0.12, 0.68);
+            midCol   = vec3(0.96, 0.42, 0.86);
+            innerCol = vec3(1.00, 0.92, 1.00);
+          }
+          vec3 col = mix(outerCol, midCol, smoothstep(0.0, 0.55, temp));
+          col = mix(col, innerCol, smoothstep(0.55, 1.0, temp));
+
+          vec3 blueShift = mix(col, vec3(0.88, 0.95, 1.0), 0.42);
+          vec3 redShift  = col * vec3(1.15, 0.58, 0.38);
+          return mix(col, shift > 0.0 ? blueShift : redShift, clamp(abs(shift) * 0.65, 0.0, 1.0));
+        }
+
+        void main() {
+          if (uParticleDensity <= 0.01) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            gl_PointSize = 0.0;
+            vAlpha = 0.0;
+            return;
+          }
+
+          // 生命周期：粒子从外围螺旋向黑洞坠落并循环重生
+          float rMin = 1.48;
+          float rMax = 8.40;
+          float fallSpeed = 0.032 * (0.4 + 0.6 * uSpin);
+          float life = fract(aSeed.x - uTime * fallSpeed + aSeed.w * 0.17);
+          float r = mix(rMin, rMax, pow(life, 1.25));
+
+          // 开普勒角速度：越靠近内圈转得越快
+          float omega = (2.7 / pow(r, 1.2)) * uSpin;
+          float angle = aSeed.y + uTime * omega + 3.5 / sqrt(r);
+
+          // 潮汐压缩：外围较厚，靠近内圈被压扁到赤道面
+          float thickness = 0.04 + 0.045 * (r - rMin);
+          float y = aSeed.z * thickness * (0.4 + 0.6 * sin(angle * 2.0 + aSeed.w * 6.28));
+
+          vec3 worldPos = vec3(r * cos(angle), y, r * sin(angle));
+
+          // 转换到相机坐标系（uCamMat 列向量为 right, up, fwd）
+          vec3 rel = worldPos - uCamPos;
+          float zCam = dot(rel, uCamMat[2]);
+          float xCam = dot(rel, uCamMat[0]);
+          float yCam = dot(rel, uCamMat[1]);
+
+          // 在相机背后则剔除
+          if (zCam <= 0.2) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            gl_PointSize = 0.0;
+            vAlpha = 0.0;
+            return;
+          }
+
+          // 计算黑洞中心在相机空间的位置 (原点 - uCamPos)
+          float bhDist = length(uCamPos);
+          vec2 bhProj = vec2(xCam, yCam) / zCam; // 视平面坐标
+          float bProj = length(bhProj) * bhDist;  // 近似撞击参数
+
+          // 如果粒子位于黑洞后方
+          if (zCam > bhDist) {
+            // 事件视界遮挡：落在黑洞阴影半径内直接丢弃
+            if (bProj < 1.32) {
+              gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+              gl_PointSize = 0.0;
+              vAlpha = 0.0;
+              return;
+            }
+            // 近似爱因斯坦引力透镜偏折：把黑洞后方靠近边缘的粒子向外推开抬升
+            float lensPush = (0.75 * uGravity) / max(bProj * bProj, 0.5);
+            vec2 dir2d = normalize(vec2(xCam, yCam) + vec2(1e-5));
+            xCam += dir2d.x * lensPush * zCam * 0.42;
+            yCam += dir2d.y * lensPush * zCam * 0.42;
+          }
+
+          // 与背景着色器相同的透视投影 (uv * minRes, focal = 1.45)
+          float minRes = min(uRes.x, uRes.y);
+          vec2 screenPx = (vec2(xCam, yCam) / zCam) * 1.45 * minRes;
+          vec2 ndc = (screenPx * 2.0) / uRes;
+
+          gl_Position = vec4(ndc, 0.0, 1.0);
+
+          // 温度与多普勒效应
+          float temp = clamp(1.0 - (r - rMin) / (rMax - rMin), 0.0, 1.0);
+          temp = pow(temp, 0.78);
+
+          vec3 tangentVel = normalize(vec3(-worldPos.z, 0.0, worldPos.x));
+          vec3 viewDir = normalize(worldPos - uCamPos);
+          float dopplerDot = dot(tangentVel, -viewDir);
+          float shift = dopplerDot * uDoppler;
+          float beaming = pow(clamp(1.0 + shift * 0.55, 0.3, 2.0), 1.8);
+
+          // 边缘淡入淡出
+          float lifeFade = smoothstep(0.0, 0.08, life) * (1.0 - smoothstep(0.86, 1.0, life));
+
+          vColor = getParticlePalette(temp, shift);
+          vAlpha = lifeFade * beaming * (0.28 + 0.72 * temp) * uParticleDensity;
+
+          // 粒子像素大小随距离与亮度缩放
+          float baseSize = mix(2.2, 5.8, aSeed.w) * (11.5 / max(zCam, 2.0));
+          gl_PointSize = clamp(baseSize * (minRes / 900.0 + 0.35), 1.5, 11.0);
+        }
+      `;
+
+      const ptFsSource = `
+        precision mediump float;
+        varying vec3 vColor;
+        varying float vAlpha;
+
+        void main() {
+          vec2 c = gl_PointCoord - vec2(0.5);
+          float d2 = dot(c, c);
+          if (d2 > 0.25) discard;
+
+          // 柔和发光星点核心 + 光晕
+          float core = exp(-d2 * 18.0);
+          float halo = exp(-d2 * 6.5) * 0.45;
+          float glow = (core + halo) * vAlpha;
+
+          gl_FragColor = vec4(vColor * glow, glow);
         }
       `;
 
@@ -665,42 +802,70 @@
         return s;
       }
 
-      const vs = compileShader(gl.VERTEX_SHADER, vsSource);
-      const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
-      const prog = gl.createProgram();
-      gl.attachShader(prog, vs);
-      gl.attachShader(prog, fs);
-      gl.linkProgram(prog);
-
-      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-        console.error("Program link error:", gl.getProgramInfoLog(prog));
+      function createProgram(vsSrc, fsSrc) {
+        const vs = compileShader(gl.VERTEX_SHADER, vsSrc);
+        const fs = compileShader(gl.FRAGMENT_SHADER, fsSrc);
+        const prog = gl.createProgram();
+        gl.attachShader(prog, vs);
+        gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+          console.error("Program link error:", gl.getProgramInfoLog(prog));
+        }
+        return prog;
       }
 
-      gl.useProgram(prog);
-
-      // 全屏三角形/四边形
-      const buf = gl.createBuffer();
-      gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+      // 初始化背景流体程序
+      const bgProg = createProgram(bgVsSource, bgFsSource);
+      const bgBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf);
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
         -1, -1, 1, -1, -1, 1,
         -1, 1, 1, -1, 1, 1
       ]), gl.STATIC_DRAW);
 
-      const aPos = gl.getAttribLocation(prog, "aPos");
-      gl.enableVertexAttribArray(aPos);
-      gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+      const bgLoc = {
+        aPos: gl.getAttribLocation(bgProg, "aPos"),
+        uRes: gl.getUniformLocation(bgProg, "uRes"),
+        uTime: gl.getUniformLocation(bgProg, "uTime"),
+        uCamPos: gl.getUniformLocation(bgProg, "uCamPos"),
+        uCamMat: gl.getUniformLocation(bgProg, "uCamMat"),
+        uGravity: gl.getUniformLocation(bgProg, "uGravity"),
+        uSpin: gl.getUniformLocation(bgProg, "uSpin"),
+        uDoppler: gl.getUniformLocation(bgProg, "uDoppler"),
+        uTheme: gl.getUniformLocation(bgProg, "uTheme"),
+        uFluidDensity: gl.getUniformLocation(bgProg, "uFluidDensity")
+      };
 
-      // Uniforms
-      const uRes = gl.getUniformLocation(prog, "uRes");
-      const uTime = gl.getUniformLocation(prog, "uTime");
-      const uCamPos = gl.getUniformLocation(prog, "uCamPos");
-      const uCamMat = gl.getUniformLocation(prog, "uCamMat");
-      const uGravity = gl.getUniformLocation(prog, "uGravity");
-      const uSpin = gl.getUniformLocation(prog, "uSpin");
-      const uDoppler = gl.getUniformLocation(prog, "uDoppler");
-      const uTheme = gl.getUniformLocation(prog, "uTheme");
+      // 初始化 5,000 颗吸积粒子程序
+      const PARTICLE_COUNT = 5000;
+      const ptProg = createProgram(ptVsSource, ptFsSource);
+      const ptData = new Float32Array(PARTICLE_COUNT * 4);
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        ptData[i * 4 + 0] = Math.random();                  // 初始半径比例
+        ptData[i * 4 + 1] = Math.random() * Math.PI * 2.0;  // 初始角度
+        ptData[i * 4 + 2] = (Math.random() * 2.0 - 1.0);    // 垂直散布
+        ptData[i * 4 + 3] = Math.random();                  // 大小与相位种子
+      }
 
-      // 相机状态（球坐标）
+      const ptBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, ptBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, ptData, gl.STATIC_DRAW);
+
+      const ptLoc = {
+        aSeed: gl.getAttribLocation(ptProg, "aSeed"),
+        uRes: gl.getUniformLocation(ptProg, "uRes"),
+        uTime: gl.getUniformLocation(ptProg, "uTime"),
+        uCamPos: gl.getUniformLocation(ptProg, "uCamPos"),
+        uCamMat: gl.getUniformLocation(ptProg, "uCamMat"),
+        uGravity: gl.getUniformLocation(ptProg, "uGravity"),
+        uSpin: gl.getUniformLocation(ptProg, "uSpin"),
+        uDoppler: gl.getUniformLocation(ptProg, "uDoppler"),
+        uTheme: gl.getUniformLocation(ptProg, "uTheme"),
+        uParticleDensity: gl.getUniformLocation(ptProg, "uParticleDensity")
+      };
+
+      // 状态管理
       const state = {
         yaw: 0.45,
         pitch: 0.22,
@@ -708,6 +873,8 @@
         targetYaw: 0.45,
         targetPitch: 0.22,
         targetDist: 11.5,
+        particleDensity: 1.0,
+        fluidDensity: 0.8,
         gravity: 1.0,
         spin: 1.0,
         doppler: 0.75,
@@ -715,7 +882,6 @@
         autoOrbit: true
       };
 
-      // 画布尺寸自适应
       function resize() {
         const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
         canvas.width = Math.floor(window.innerWidth * dpr);
@@ -792,12 +958,18 @@
       });
 
       // UI 绑定
+      const sliderParticle = document.getElementById("sliderParticle");
+      const sliderFluid = document.getElementById("sliderFluid");
       const sliderGravity = document.getElementById("sliderGravity");
       const sliderSpin = document.getElementById("sliderSpin");
       const sliderDoppler = document.getElementById("sliderDoppler");
+
+      const valParticle = document.getElementById("valParticle");
+      const valFluid = document.getElementById("valFluid");
       const valGravity = document.getElementById("valGravity");
       const valSpin = document.getElementById("valSpin");
       const valDoppler = document.getElementById("valDoppler");
+
       const switchOrbit = document.getElementById("switchOrbit");
       const toggleUiBtn = document.getElementById("toggleUiBtn");
       const resetCamBtn = document.getElementById("resetCamBtn");
@@ -805,6 +977,16 @@
       const hudHeader = document.getElementById("hudHeader");
       const hintBar = document.getElementById("hintBar");
       const fpsBadge = document.getElementById("fpsBadge");
+
+      sliderParticle.addEventListener("input", (e) => {
+        state.particleDensity = parseFloat(e.target.value);
+        valParticle.textContent = state.particleDensity.toFixed(2);
+      });
+
+      sliderFluid.addEventListener("input", (e) => {
+        state.fluidDensity = parseFloat(e.target.value);
+        valFluid.textContent = state.fluidDensity.toFixed(2);
+      });
 
       sliderGravity.addEventListener("input", (e) => {
         state.gravity = parseFloat(e.target.value);
@@ -849,25 +1031,21 @@
         state.targetDist = 11.5;
       });
 
-      // 矩阵辅助函数：根据相机位置构建朝向原点的正交基
       function computeCamMatrix(pos) {
         const len = Math.hypot(pos[0], pos[1], pos[2]);
         const fwd = [-pos[0] / len, -pos[1] / len, -pos[2] / len];
         const worldUp = [0, 1, 0];
 
-        // right = normalize(cross(fwd, worldUp))
         let rx = fwd[1] * worldUp[2] - fwd[2] * worldUp[1];
         let ry = fwd[2] * worldUp[0] - fwd[0] * worldUp[2];
         let rz = fwd[0] * worldUp[1] - fwd[1] * worldUp[0];
         const rLen = Math.hypot(rx, ry, rz) || 1;
         rx /= rLen; ry /= rLen; rz /= rLen;
 
-        // up = cross(right, fwd)
         const ux = ry * fwd[2] - rz * fwd[1];
         const uy = rz * fwd[0] - rx * fwd[2];
         const uz = rx * fwd[1] - ry * fwd[0];
 
-        // 列主序 3x3 矩阵: [right, up, fwd]
         return new Float32Array([
           rx, ry, rz,
           ux, uy, uz,
@@ -883,12 +1061,12 @@
       function render(now) {
         const dt = Math.min((now - lastFrame) * 0.001, 0.1);
         lastFrame = now;
+        const elapsed = (now - startTime) * 0.001;
 
         if (state.autoOrbit && !isDragging) {
           state.targetYaw += dt * 0.12;
         }
 
-        // 平滑阻尼插值
         const damp = 1.0 - Math.exp(-dt * 9.0);
         state.yaw += (state.targetYaw - state.yaw) * damp;
         state.pitch += (state.targetPitch - state.pitch) * damp;
@@ -902,16 +1080,46 @@
         ];
         const camMat = computeCamMatrix(camPos);
 
-        gl.uniform2f(uRes, canvas.width, canvas.height);
-        gl.uniform1f(uTime, (now - startTime) * 0.001);
-        gl.uniform3f(uCamPos, camPos[0], camPos[1], camPos[2]);
-        gl.uniformMatrix3fv(uCamMat, false, camMat);
-        gl.uniform1f(uGravity, state.gravity);
-        gl.uniform1f(uSpin, state.spin);
-        gl.uniform1f(uDoppler, state.doppler);
-        gl.uniform1f(uTheme, state.theme);
+        // Pass 1: 渲染流体吸积盘 + 引力透镜星空背景
+        gl.disable(gl.BLEND);
+        gl.useProgram(bgProg);
+        gl.bindBuffer(gl.ARRAY_BUFFER, bgBuf);
+        gl.enableVertexAttribArray(bgLoc.aPos);
+        gl.vertexAttribPointer(bgLoc.aPos, 2, gl.FLOAT, false, 0, 0);
+
+        gl.uniform2f(bgLoc.uRes, canvas.width, canvas.height);
+        gl.uniform1f(bgLoc.uTime, elapsed);
+        gl.uniform3f(bgLoc.uCamPos, camPos[0], camPos[1], camPos[2]);
+        gl.uniformMatrix3fv(bgLoc.uCamMat, false, camMat);
+        gl.uniform1f(bgLoc.uGravity, state.gravity);
+        gl.uniform1f(bgLoc.uSpin, state.spin);
+        gl.uniform1f(bgLoc.uDoppler, state.doppler);
+        gl.uniform1f(bgLoc.uTheme, state.theme);
+        gl.uniform1f(bgLoc.uFluidDensity, state.fluidDensity);
 
         gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+        // Pass 2: 叠加 5,000 颗 3D 螺旋吸积粒子（加法混合）
+        if (state.particleDensity > 0.01) {
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.ONE, gl.ONE);
+          gl.useProgram(ptProg);
+          gl.bindBuffer(gl.ARRAY_BUFFER, ptBuf);
+          gl.enableVertexAttribArray(ptLoc.aSeed);
+          gl.vertexAttribPointer(ptLoc.aSeed, 4, gl.FLOAT, false, 0, 0);
+
+          gl.uniform2f(ptLoc.uRes, canvas.width, canvas.height);
+          gl.uniform1f(ptLoc.uTime, elapsed);
+          gl.uniform3f(ptLoc.uCamPos, camPos[0], camPos[1], camPos[2]);
+          gl.uniformMatrix3fv(ptLoc.uCamMat, false, camMat);
+          gl.uniform1f(ptLoc.uGravity, state.gravity);
+          gl.uniform1f(ptLoc.uSpin, state.spin);
+          gl.uniform1f(ptLoc.uDoppler, state.doppler);
+          gl.uniform1f(ptLoc.uTheme, state.theme);
+          gl.uniform1f(ptLoc.uParticleDensity, state.particleDensity);
+
+          gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
+        }
 
         frames++;
         if (now - fpsTime >= 500) {
