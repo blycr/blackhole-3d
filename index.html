@@ -89,6 +89,12 @@
       letter-spacing: 0.04em;
     }
 
+    .top-actions.hidden {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.35s ease;
+    }
+
     .top-actions {
       position: fixed;
       top: 20px;
@@ -206,7 +212,7 @@
 
     .theme-pills {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 6px;
       margin-top: 6px;
     }
@@ -388,7 +394,16 @@
         <button class="pill-btn active" data-theme="0">卡冈图雅</button>
         <button class="pill-btn" data-theme="1">蓝巨星</button>
         <button class="pill-btn" data-theme="2">深渊紫</button>
+        <button class="pill-btn" data-theme="3">自动渐变</button>
       </div>
+    </div>
+
+    <div class="control-row">
+      <div class="control-label">
+        <span>色彩循环周期</span>
+        <span class="control-val" id="valCycle">60s</span>
+      </div>
+      <input type="range" id="sliderCycle" min="20" max="300" step="5" value="60" />
     </div>
 
     <div class="toggle-row">
@@ -483,7 +498,9 @@
         uniform float uGravity;
         uniform float uSpin;
         uniform float uDoppler;
-        uniform float uTheme;
+        uniform vec3 uColOuter;
+        uniform vec3 uColMid;
+        uniform vec3 uColInner;
         uniform float uFluidDensity;
 
         float hash31(vec3 p) {
@@ -523,25 +540,10 @@
         }
 
         vec3 getDiskPalette(float temp, float shift) {
-          vec3 outerCol, midCol, innerCol;
+          vec3 col = mix(uColOuter, uColMid, smoothstep(0.0, 0.55, temp));
+          col = mix(col, uColInner, smoothstep(0.45, 1.0, temp));
 
-          if (uTheme < 0.5) {
-            outerCol = vec3(0.45, 0.09, 0.02);
-            midCol   = vec3(1.00, 0.48, 0.10);
-            innerCol = vec3(1.00, 0.94, 0.82);
-          } else if (uTheme < 1.5) {
-            outerCol = vec3(0.05, 0.14, 0.45);
-            midCol   = vec3(0.18, 0.62, 1.00);
-            innerCol = vec3(0.88, 0.97, 1.00);
-          } else {
-            outerCol = vec3(0.28, 0.04, 0.35);
-            midCol   = vec3(0.88, 0.25, 0.72);
-            innerCol = vec3(1.00, 0.88, 0.99);
-          }
-
-          vec3 col = mix(outerCol, midCol, smoothstep(0.0, 0.55, temp));
-          col = mix(col, innerCol, smoothstep(0.45, 1.0, temp));
-
+          // 相对论多普勒色移：迎面略偏冷白，远离略偏深红
           vec3 blueShift = mix(col, vec3(0.85, 0.93, 1.0), 0.35);
           vec3 redShift  = col * vec3(1.15, 0.65, 0.45);
           col = mix(col, shift > 0.0 ? blueShift : redShift, clamp(abs(shift) * 0.6, 0.0, 1.0));
@@ -709,29 +711,17 @@
         uniform float uGravity;
         uniform float uSpin;
         uniform float uDoppler;
-        uniform float uTheme;
+        uniform vec3 uColOuter;
+        uniform vec3 uColMid;
+        uniform vec3 uColInner;
         uniform float uParticleDensity;
 
         varying vec3 vColor;
         varying float vAlpha;
 
         vec3 getParticlePalette(float temp, float shift) {
-          vec3 outerCol, midCol, innerCol;
-          if (uTheme < 0.5) {
-            outerCol = vec3(0.78, 0.22, 0.05);
-            midCol   = vec3(1.00, 0.64, 0.22);
-            innerCol = vec3(1.00, 0.97, 0.88);
-          } else if (uTheme < 1.5) {
-            outerCol = vec3(0.14, 0.32, 0.85);
-            midCol   = vec3(0.32, 0.78, 1.00);
-            innerCol = vec3(0.94, 0.99, 1.00);
-          } else {
-            outerCol = vec3(0.55, 0.12, 0.68);
-            midCol   = vec3(0.96, 0.42, 0.86);
-            innerCol = vec3(1.00, 0.94, 1.00);
-          }
-          vec3 col = mix(outerCol, midCol, smoothstep(0.0, 0.55, temp));
-          col = mix(col, innerCol, smoothstep(0.55, 1.0, temp));
+          vec3 col = mix(uColOuter, uColMid, smoothstep(0.0, 0.55, temp));
+          col = mix(col, uColInner, smoothstep(0.55, 1.0, temp));
 
           vec3 blueShift = mix(col, vec3(0.88, 0.95, 1.0), 0.42);
           vec3 redShift  = col * vec3(1.15, 0.58, 0.38);
@@ -809,7 +799,7 @@
 
           vColor = getParticlePalette(temp, shift);
           // 20 万颗粒子，单颗亮度压低避免叠加过曝
-          vAlpha = lifeFade * beaming * (0.25 + 0.75 * temp) * 0.16 * uParticleDensity;
+          vAlpha = lifeFade * beaming * (0.25 + 0.75 * temp) * 0.19 * uParticleDensity;
 
           float baseSize = mix(0.8, 2.8, pow(aSeed.w, 1.35)) * (11.5 / max(zCam, 2.0));
           gl_PointSize = clamp(baseSize * (minRes / 1000.0 + 0.3), 1.0, 5.5);
@@ -998,7 +988,9 @@
           uGravity: u(sceneProg, "uGravity"),
           uSpin: u(sceneProg, "uSpin"),
           uDoppler: u(sceneProg, "uDoppler"),
-          uTheme: u(sceneProg, "uTheme"),
+          uColOuter: u(sceneProg, "uColOuter"),
+          uColMid: u(sceneProg, "uColMid"),
+          uColInner: u(sceneProg, "uColInner"),
           uFluidDensity: u(sceneProg, "uFluidDensity")
         },
         pt: {
@@ -1010,7 +1002,9 @@
           uGravity: u(ptProg, "uGravity"),
           uSpin: u(ptProg, "uSpin"),
           uDoppler: u(ptProg, "uDoppler"),
-          uTheme: u(ptProg, "uTheme"),
+          uColOuter: u(ptProg, "uColOuter"),
+          uColMid: u(ptProg, "uColMid"),
+          uColInner: u(ptProg, "uColInner"),
           uParticleDensity: u(ptProg, "uParticleDensity")
         },
         bright: {
@@ -1142,6 +1136,7 @@
         spin: 1.0,
         doppler: 0.75,
         theme: 0,
+        cycle: 60,
         autoOrbit: true
       };
 
@@ -1231,6 +1226,13 @@
         });
       });
 
+      const sliderCycle = el("sliderCycle");
+      const valCycle = el("valCycle");
+      sliderCycle.addEventListener("input", (e) => {
+        state.cycle = parseFloat(e.target.value);
+        valCycle.textContent = state.cycle.toFixed(0) + "s";
+      });
+
       document.querySelectorAll(".pill-btn").forEach((btn) => {
         btn.addEventListener("click", () => {
           document.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("active"));
@@ -1250,13 +1252,45 @@
       const hintBar = el("hintBar");
       const toggleUiBtn = el("toggleUiBtn");
 
+      const topActions = document.querySelector(".top-actions");
+
       let uiHidden = false;
+      function setUiVisible(v) {
+        controlPanel.classList.toggle("hidden", !v);
+        hudHeader.classList.toggle("hidden", !v);
+        hintBar.classList.toggle("hidden", !v);
+        toggleUiBtn.textContent = v ? "隐藏 UI" : "显示 UI";
+      }
+
       toggleUiBtn.addEventListener("click", () => {
         uiHidden = !uiHidden;
-        controlPanel.classList.toggle("hidden", uiHidden);
-        hudHeader.classList.toggle("hidden", uiHidden);
-        hintBar.classList.toggle("hidden", uiHidden);
-        toggleUiBtn.textContent = uiHidden ? "显示 UI" : "隐藏 UI";
+        autoHidden = false;
+        setUiVisible(!uiHidden);
+      });
+
+      // 壁纸模式：?wallpaper=1 -> 全部 UI 收起，纯画面露出
+      const wallpaperMode = new URLSearchParams(location.search).get("wallpaper") === "1";
+      if (wallpaperMode) {
+        uiHidden = true;
+        setUiVisible(false);
+        topActions.classList.add("hidden");
+      }
+
+      // 空闲自动淡出：6 秒无操作收起面板，一动鼠标再浮现
+      let lastActivity = performance.now();
+      let autoHidden = false;
+
+      function markActivity() {
+        lastActivity = performance.now();
+        if (autoHidden) {
+          autoHidden = false;
+          uiHidden = false;
+          setUiVisible(true);
+        }
+      }
+
+      ["mousemove", "mousedown", "wheel", "touchstart", "touchmove"].forEach((evt) => {
+        window.addEventListener(evt, markActivity, { passive: true });
       });
 
       el("resetCamBtn").addEventListener("click", () => {
@@ -1309,6 +1343,103 @@
       // ============================================================
       // 12. 渲染循环
       // ============================================================
+
+      // ============================================================
+      // 11.5 调色引擎：静态主题 + LCh 感知插值的自动渐变
+      // ============================================================
+      // 三个静态主题（线性 RGB，与着色器原值一致）
+      const STATIC_THEMES = [
+        [[0.45, 0.09, 0.02], [1.00, 0.48, 0.10], [1.00, 0.94, 0.82]],
+        [[0.05, 0.14, 0.45], [0.18, 0.62, 1.00], [0.88, 0.97, 1.00]],
+        [[0.28, 0.04, 0.35], [0.88, 0.25, 0.72], [1.00, 0.88, 0.99]]
+      ];
+
+      // 自动渐变的六个关键帧：暖色为主，中段穿插冷色，首尾闭合
+      const AUTO_KEYS = [
+        [[0.45, 0.09, 0.02], [1.00, 0.48, 0.10], [1.00, 0.94, 0.82]], // ① 金橙
+        [[0.58, 0.16, 0.02], [1.00, 0.64, 0.13], [1.00, 0.97, 0.88]], // ② 熔金
+        [[0.64, 0.02, 0.01], [1.00, 0.16, 0.05], [1.00, 0.82, 0.70]], // ③ 血赤
+        [[0.42, 0.02, 0.30], [0.95, 0.14, 0.62], [1.00, 0.80, 0.94]], // ④ 品红
+        [[0.02, 0.22, 0.36], [0.10, 0.72, 0.86], [0.86, 1.00, 1.00]], // ⑤ 极光青
+        [[0.24, 0.05, 0.42], [0.62, 0.26, 0.98], [0.95, 0.88, 1.00]]  // ⑥ 暮紫
+      ];
+
+      // 线性 RGB -> CIELAB -> LCh
+      function linToLab(r, g, b) {
+        const X = 0.4124 * r + 0.3576 * g + 0.1805 * b;
+        const Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        const Z = 0.0193 * r + 0.1192 * g + 0.9505 * b;
+        const Xn = 0.95047, Yn = 1.0, Zn = 1.08883;
+        const f = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+        const fx = f(X / Xn), fy = f(Y / Yn), fz = f(Z / Zn);
+        return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+      }
+
+      function labToLin(Lv, a, b) {
+        const Xn = 0.95047, Yn = 1.0, Zn = 1.08883;
+        const fy = (Lv + 16) / 116, fx = a / 500 + fy, fz = fy - b / 200;
+        const finv = (t) => {
+          const t3 = t * t * t;
+          return t3 > 0.008856 ? t3 : (t - 16 / 116) / 7.787;
+        };
+        const X = Xn * finv(fx), Y = Yn * finv(fy), Z = Zn * finv(fz);
+        return [
+          Math.max(0, 3.2406 * X - 1.5372 * Y - 0.4986 * Z),
+          Math.max(0, -0.9689 * X + 1.8758 * Y + 0.0415 * Z),
+          Math.max(0, 0.0557 * X - 0.2040 * Y + 1.0570 * Z)
+        ];
+      }
+
+      function labToLch(lab) {
+        return [lab[0], Math.hypot(lab[1], lab[2]), Math.atan2(lab[2], lab[1]) * 180 / Math.PI];
+      }
+
+      function lchToLab(lch) {
+        const hr = lch[2] * Math.PI / 180;
+        return [lch[0], lch[1] * Math.cos(hr), lch[1] * Math.sin(hr)];
+      }
+
+      // 预计算关键帧的 LCh，避免每帧重复转换
+      const AUTO_LCH = AUTO_KEYS.map((palette) =>
+        palette.map((rgb) => labToLch(linToLab(rgb[0], rgb[1], rgb[2])))
+      );
+
+      function mixLch(c0, c1, t) {
+        let dh = c1[2] - c0[2];
+        while (dh > 180) dh -= 360;
+        while (dh < -180) dh += 360;
+        return [
+          c0[0] + (c1[0] - c0[0]) * t,
+          c0[1] + (c1[1] - c0[1]) * t,
+          c0[2] + dh * t
+        ];
+      }
+
+      function computePalette(elapsed) {
+        // 静态主题：直接返回原调色板，保持与之前完全一致的观感
+        if (state.theme < 3) return STATIC_THEMES[state.theme];
+
+        const N = AUTO_LCH.length;
+        const cycle = Math.max(state.cycle, 5);
+        const phase = (elapsed / cycle) * N;
+        const wrapped = ((phase % N) + N) % N;
+        const i0 = Math.floor(wrapped);
+        const i1 = (i0 + 1) % N;
+        const raw = wrapped - i0;
+        const t = raw * raw * (3 - 2 * raw); // 平滑缓动，避免关键帧处顿挫
+
+        // 极低频亮度呼吸（±3.5%），让静止画面也有生命感
+        const breathe = 1.0 + 0.035 * Math.sin((elapsed / cycle) * Math.PI * 2.0);
+
+        const out = [];
+        for (let slot = 0; slot < 3; slot++) {
+          const lab = lchToLab(mixLch(AUTO_LCH[i0][slot], AUTO_LCH[i1][slot], t));
+          const rgb = labToLin(lab[0], lab[1], lab[2]);
+          out.push([rgb[0] * breathe, rgb[1] * breathe, rgb[2] * breathe]);
+        }
+        return out;
+      }
+
       let startTime = performance.now();
       let lastFrame = startTime;
       let frames = 0;
@@ -1319,6 +1450,7 @@
         const dt = Math.min((now - lastFrame) * 0.001, 0.1);
         lastFrame = now;
         const elapsed = (now - startTime) * 0.001;
+        const pal = computePalette(elapsed);
 
         if (state.autoOrbit && !isDragging) {
           state.targetYaw += dt * 0.12;
@@ -1352,7 +1484,9 @@
         gl.uniform1f(L.scene.uGravity, state.gravity);
         gl.uniform1f(L.scene.uSpin, state.spin);
         gl.uniform1f(L.scene.uDoppler, state.doppler);
-        gl.uniform1f(L.scene.uTheme, state.theme);
+        gl.uniform3f(L.scene.uColOuter, pal[0][0], pal[0][1], pal[0][2]);
+        gl.uniform3f(L.scene.uColMid, pal[1][0], pal[1][1], pal[1][2]);
+        gl.uniform3f(L.scene.uColInner, pal[2][0], pal[2][1], pal[2][2]);
         gl.uniform1f(L.scene.uFluidDensity, state.fluidDensity);
         drawFullscreen(L.scene.aPos);
 
@@ -1372,7 +1506,9 @@
           gl.uniform1f(L.pt.uGravity, state.gravity);
           gl.uniform1f(L.pt.uSpin, state.spin);
           gl.uniform1f(L.pt.uDoppler, state.doppler);
-          gl.uniform1f(L.pt.uTheme, state.theme);
+          gl.uniform3f(L.pt.uColOuter, pal[0][0], pal[0][1], pal[0][2]);
+          gl.uniform3f(L.pt.uColMid, pal[1][0], pal[1][1], pal[1][2]);
+          gl.uniform3f(L.pt.uColInner, pal[2][0], pal[2][1], pal[2][2]);
           gl.uniform1f(L.pt.uParticleDensity, state.particleDensity);
 
           gl.drawArrays(gl.POINTS, 0, PARTICLE_COUNT);
@@ -1434,6 +1570,13 @@
         gl.uniform1f(L.comp.uTime, elapsed);
         gl.uniform2f(L.comp.uRes, renderW, renderH);
         drawFullscreen(L.comp.aPos);
+
+        // ---------- 空闲时自动淡出 UI（壁纸模式已全程隐藏）----------
+        if (!wallpaperMode && !autoHidden && !uiHidden && now - lastActivity > 6000) {
+          autoHidden = true;
+          uiHidden = true;
+          setUiVisible(false);
+        }
 
         // ---------- FPS 统计与自适应降级 ----------
         frames++;
