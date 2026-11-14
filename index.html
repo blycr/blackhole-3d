@@ -137,6 +137,8 @@
       border: 1px solid var(--border-glass);
       border-radius: 16px;
       padding: 16px 18px;
+      max-height: calc(100vh - 48px);
+      overflow-y: auto;
       z-index: 15;
       box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
       transition: opacity 0.35s ease, transform 0.35s ease;
@@ -360,6 +362,14 @@
         <span class="control-val" id="valBloom">1.10</span>
       </div>
       <input type="range" id="sliderBloom" min="0.0" max="2.5" step="0.05" value="1.1" />
+    </div>
+
+    <div class="control-row">
+      <div class="control-label">
+        <span>画面倾斜</span>
+        <span class="control-val" id="valRoll">-18°</span>
+      </div>
+      <input type="range" id="sliderRoll" min="-70" max="70" step="1" value="-18" />
     </div>
 
     <div class="control-row">
@@ -685,7 +695,7 @@
           }
 
           // 光子环：贴近光子球多次绕行的光线形成细锐亮环
-          float photonRing = exp(-pow((minR - 1.36 * rs) / 0.155, 2.0)) * 0.75;
+          float photonRing = exp(-pow((minR - 1.36 * rs) / 0.175, 2.0)) * 0.75;
           vec3 ringColor = getDiskPalette(0.94, 0.2);
           accumColor += transmittance * ringColor * photonRing;
 
@@ -885,6 +895,8 @@
         uniform float uBloomStrength;
         uniform float uExposure;
         uniform float uTime;
+        uniform float uSSAA;
+        uniform vec2 uDispTexel;
         uniform vec2 uRes;
         varying vec2 vUv;
 
@@ -902,7 +914,17 @@
         }
 
         void main() {
-          vec3 sceneCol = texture2D(uScene, vUv).rgb;
+          // 超采样降采样：4 点旋转网格，等效面积平均，消除视界边缘锯齿
+          vec3 sceneCol;
+          if (uSSAA > 1.15) {
+            sceneCol  = texture2D(uScene, vUv + uDispTexel * vec2(-0.25, -0.25)).rgb;
+            sceneCol += texture2D(uScene, vUv + uDispTexel * vec2( 0.25, -0.25)).rgb;
+            sceneCol += texture2D(uScene, vUv + uDispTexel * vec2(-0.25,  0.25)).rgb;
+            sceneCol += texture2D(uScene, vUv + uDispTexel * vec2( 0.25,  0.25)).rgb;
+            sceneCol *= 0.25;
+          } else {
+            sceneCol = texture2D(uScene, vUv).rgb;
+          }
           vec3 bloomCol = texture2D(uBloom, vUv).rgb;
 
           // 轻微色散：让泛光边缘带一点冷暖分离，更有镜头质感
@@ -1023,6 +1045,8 @@
           uScene: u(compProg, "uScene"),
           uBloom: u(compProg, "uBloom"),
           uBloomStrength: u(compProg, "uBloomStrength"),
+          uSSAA: u(compProg, "uSSAA"),
+          uDispTexel: u(compProg, "uDispTexel"),
           uExposure: u(compProg, "uExposure"),
           uTime: u(compProg, "uTime"),
           uRes: u(compProg, "uRes")
@@ -1071,7 +1095,9 @@
       }
 
       let sceneRT = null, bloomA = null, bloomB = null;
-      let renderW = 2, renderH = 2;
+      let renderW = 2, renderH = 2;   // 场景渲染分辨率（超采样后）
+      let displayW = 2, displayH = 2; // 画布显示分辨率
+      let ssaaRatio = 1.0;            // 超采样倍率
 
       // 自适应渲染倍率（仅在性能不足时下调，强 GPU 上保持满血）
       let renderScale = 1.0;
@@ -1079,25 +1105,31 @@
 
       function computeRenderSize() {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        let w = window.innerWidth * dpr;
-        let h = window.innerHeight * dpr;
+        let dw = Math.floor(window.innerWidth * dpr);
+        let dh = Math.floor(window.innerHeight * dpr);
 
-        // 像素预算：约 4K（820 万像素），超出按比例缩减
-        const BUDGET = 8.2e6;
-        const px = w * h;
-        if (px > BUDGET) {
-          const k = Math.sqrt(BUDGET / px);
-          w *= k;
-          h *= k;
+        // 显示分辨率像素预算（约 4K）
+        const BUDGET = 9.0e6;
+        if (dw * dh > BUDGET) {
+          const k = Math.sqrt(BUDGET / (dw * dh));
+          dw = Math.floor(dw * k);
+          dh = Math.floor(dh * k);
         }
 
-        w = Math.max(320, Math.floor(w * renderScale));
-        h = Math.max(180, Math.floor(h * renderScale));
+        // 超采样抗锯齿：渲染分辨率高于显示分辨率，合成时降采样
+        // 渲染像素总量控制在约 1200 万以内（1080p 可达 2x，4K 约 1.2x）
+        ssaaRatio = Math.max(1.0, Math.min(2.0, Math.sqrt(12.0e6 / Math.max(dw * dh, 1))));
+        ssaaRatio *= renderScale;
 
-        canvas.width = w;
-        canvas.height = h;
-        renderW = w;
-        renderH = h;
+        canvas.width = dw;
+        canvas.height = dh;
+        displayW = dw;
+        displayH = dh;
+
+        renderW = Math.max(320, Math.floor(dw * ssaaRatio));
+        renderH = Math.max(180, Math.floor(dh * ssaaRatio));
+        // 实际倍率（取整后重新计算，保证采样偏移准确）
+        ssaaRatio = renderW / dw;
 
         createTargets();
       }
@@ -1124,11 +1156,12 @@
       // ============================================================
       const state = {
         yaw: 0.45,
-        pitch: 0.22,
+        pitch: 0.32,
         dist: 11.5,
         targetYaw: 0.45,
-        targetPitch: 0.22,
+        targetPitch: 0.32,
         targetDist: 11.5,
+        roll: -0.32,
         particleDensity: 1.0,
         fluidDensity: 0.8,
         bloom: 1.1,
@@ -1226,6 +1259,14 @@
         });
       });
 
+      const sliderRoll = el("sliderRoll");
+      const valRoll = el("valRoll");
+      sliderRoll.addEventListener("input", (e) => {
+        const deg = parseFloat(e.target.value);
+        state.roll = deg * Math.PI / 180;
+        valRoll.textContent = deg.toFixed(0) + "°";
+      });
+
       const sliderCycle = el("sliderCycle");
       const valCycle = el("valCycle");
       sliderCycle.addEventListener("input", (e) => {
@@ -1295,14 +1336,15 @@
 
       el("resetCamBtn").addEventListener("click", () => {
         state.targetYaw = 0.45;
-        state.targetPitch = 0.22;
+        state.targetPitch = 0.32;
         state.targetDist = 11.5;
+        state.roll = -0.32;
       });
 
       // ============================================================
       // 11. 工具函数
       // ============================================================
-      function computeCamMatrix(pos) {
+      function computeCamMatrix(pos, roll) {
         const len = Math.hypot(pos[0], pos[1], pos[2]);
         const fwd = [-pos[0] / len, -pos[1] / len, -pos[2] / len];
         const worldUp = [0, 1, 0];
@@ -1317,9 +1359,15 @@
         const uy = rz * fwd[0] - rx * fwd[2];
         const uz = rx * fwd[1] - ry * fwd[0];
 
+        // 绕视线轴滚转（相机 roll）：让吸积盘在画面中呈对角构图
+        const cr = Math.cos(roll);
+        const sr = Math.sin(roll);
+        const rr = [rx * cr + ux * sr, ry * cr + uy * sr, rz * cr + uz * sr];
+        const uu = [-rx * sr + ux * cr, -ry * sr + uy * cr, -rz * sr + uz * cr];
+
         return new Float32Array([
-          rx, ry, rz,
-          ux, uy, uz,
+          rr[0], rr[1], rr[2],
+          uu[0], uu[1], uu[2],
           fwd[0], fwd[1], fwd[2]
         ]);
       }
@@ -1467,7 +1515,7 @@
           state.dist * Math.sin(state.pitch),
           state.dist * cp * Math.cos(state.yaw)
         ];
-        const camMat = computeCamMatrix(camPos);
+        const camMat = computeCamMatrix(camPos, state.roll);
 
         // ---------- Pass 1: 场景（流体吸积盘 + 引力透镜星空）----------
         gl.bindFramebuffer(gl.FRAMEBUFFER, sceneRT.fbo);
@@ -1554,7 +1602,7 @@
 
         // ---------- Pass 5: 合成到屏幕 ----------
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.viewport(0, 0, renderW, renderH);
+        gl.viewport(0, 0, displayW, displayH);
         gl.useProgram(compProg);
 
         gl.activeTexture(gl.TEXTURE0);
@@ -1568,7 +1616,9 @@
         gl.uniform1f(L.comp.uBloomStrength, state.bloom);
         gl.uniform1f(L.comp.uExposure, 1.08);
         gl.uniform1f(L.comp.uTime, elapsed);
-        gl.uniform2f(L.comp.uRes, renderW, renderH);
+        gl.uniform2f(L.comp.uRes, displayW, displayH);
+        gl.uniform1f(L.comp.uSSAA, ssaaRatio);
+        gl.uniform2f(L.comp.uDispTexel, 1.0 / displayW, 1.0 / displayH);
         drawFullscreen(L.comp.aPos);
 
         // ---------- 空闲时自动淡出 UI（壁纸模式已全程隐藏）----------
