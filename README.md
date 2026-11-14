@@ -1,10 +1,14 @@
+<p align="center">
+  <img src="docs/logo.svg" width="72" height="72" alt="Gargantua 3D Logo" />
+</p>
+
 # Gargantua 3D · 广义相对论黑洞实时可视化
 
 一个**单文件、零外部依赖**的 WebGL 实时黑洞渲染器。逐像素积分史瓦西时空零测地线，融合体积流体吸积盘与 20 万颗开普勒轨道粒子，经由半浮点 HDR、多级泛光与 RGSS 超采样管线输出电影级画面，并支持 LCh 无缝色彩循环与桌面壁纸模式。
 
 > 直接打开 `index.html` 即可运行，无需打包工具、外部库或网络连接。
 
-**[▶ 在线预览](https://blycr.github.io/blackhole-3d/)** · **[🖼 壁纸模式（无 UI）](https://blycr.github.io/blackhole-3d/?wallpaper=1)**
+**[在线预览](https://blycr.github.io/blackhole-3d/)** · **[壁纸模式（无 UI）](https://blycr.github.io/blackhole-3d/?wallpaper=1)**
 
 ![预览：自动渐变「品红」相位，1920×1080 实机截图](docs/preview.jpg)
 
@@ -162,6 +166,7 @@ blackhole-3d/
 ├── .gitignore
 ├── .nojekyll           # 关闭 Jekyll 处理，纯静态托管
 └── docs/
+    ├── logo.svg        # SVG 矢量标志
     └── preview.jpg     # 实机效果截图
 ```
 

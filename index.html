@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Gargantua 3D — 广义相对论黑洞 · HDR 极致画质</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23060811'/%3E%3Cg transform='rotate(-18 32 32)'%3E%3Cpath d='M8 32a24 5.8 0 0 1 48 0' fill='none' stroke='%23ff9d42' stroke-width='2.6' stroke-linecap='round' opacity='.45'/%3E%3C/g%3E%3Ccircle cx='32' cy='32' r='13.8' fill='none' stroke='%23ffb86c' stroke-width='2.4'/%3E%3Ccircle cx='32' cy='32' r='11.2' fill='%2304060c'/%3E%3Cg transform='rotate(-18 32 32)'%3E%3Cpath d='M8 32a24 5.8 0 0 0 48 0' fill='none' stroke='%23ff9d42' stroke-width='3.6' stroke-linecap='round'/%3E%3Cpath d='M11 32.6a21 5 0 0 0 42 0' fill='none' stroke='%23fff4e4' stroke-width='1.2' stroke-linecap='round' opacity='.9'/%3E%3C/g%3E%3C/svg%3E" />
   <style>
     :root {
       --bg-glass: rgba(12, 14, 22, 0.58);
@@ -69,18 +70,19 @@
       text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8);
     }
 
-    .hud-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 12px var(--accent);
-      animation: pulse 2.4s infinite ease-in-out;
+    .hud-logo {
+      width: 28px;
+      height: 28px;
+      flex-shrink: 0;
+      color: var(--accent);
+      filter: drop-shadow(0 0 8px var(--accent-glow));
+      transition: color 0.25s ease, filter 0.25s ease;
     }
 
-    @keyframes pulse {
-      0%, 100% { opacity: 0.6; transform: scale(0.9); }
-      50% { opacity: 1; transform: scale(1.2); }
+    .icon-btn svg {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
     }
 
     .hud-sub {
@@ -337,15 +339,42 @@
 
   <header class="hud-header" id="hudHeader">
     <div class="hud-title">
-      <span class="hud-dot"></span>
+      <svg class="hud-logo" viewBox="0 0 64 64" aria-hidden="true">
+        <g transform="rotate(-18 32 32)">
+          <path d="M 6 32 A 26 6.2 0 0 1 58 32" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" opacity="0.42" />
+        </g>
+        <circle cx="32" cy="32" r="14.2" fill="none" stroke="currentColor" stroke-width="2.4" opacity="0.92" />
+        <circle cx="32" cy="32" r="11.4" fill="#04060c" />
+        <g transform="rotate(-18 32 32)">
+          <path d="M 6 32 A 26 6.2 0 0 0 58 32" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" />
+          <path d="M 10 32.6 A 22 5.2 0 0 0 54 32.6" fill="none" stroke="#ffffff" stroke-width="1.2" stroke-linecap="round" opacity="0.82" />
+        </g>
+      </svg>
       <span>GARGANTUA · 3D</span>
     </div>
     <div class="hud-sub" id="hudSub">广义相对论引力透镜 · HDR 泛光 · 200,000 颗吸积粒子</div>
   </header>
 
   <div class="top-actions">
-    <button class="icon-btn" id="resetCamBtn" title="重置视角">重置视角</button>
-    <button class="icon-btn" id="toggleUiBtn" title="隐藏/显示界面">隐藏 UI</button>
+    <button class="icon-btn" id="resetCamBtn" title="重置视角 (R)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+        <path d="M3 3v5h5" />
+      </svg>
+      <span>重置视角</span>
+    </button>
+    <button class="icon-btn" id="toggleUiBtn" title="隐藏/显示界面 (H)">
+      <svg id="iconEyeOpen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" />
+        <circle cx="12" cy="12" r="3" />
+      </svg>
+      <svg id="iconEyeClosed" style="display:none" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-6.5 0-10-7-10-7a21.8 21.8 0 0 1 5.06-5.94" />
+        <path d="M9.9 4.24A10.94 10.94 0 0 1 12 4c6.5 0 10 7 10 7a21.8 21.8 0 0 1-3.17 4.41" />
+        <path d="M1 1l22 22" />
+      </svg>
+      <span id="toggleUiLabel">隐藏 UI</span>
+    </button>
   </div>
 
   <div class="hint-bar" id="hintBar">
@@ -1466,6 +1495,9 @@
       const toggleUiBtn = el("toggleUiBtn");
 
       const topActions = document.querySelector(".top-actions");
+      const toggleUiLabel = el("toggleUiLabel");
+      const iconEyeOpen = el("iconEyeOpen");
+      const iconEyeClosed = el("iconEyeClosed");
 
       let uiHidden = false;
       function setUiVisible(v) {
@@ -1473,7 +1505,9 @@
         hudHeader.classList.toggle("hidden", !v);
         hintBar.classList.toggle("hidden", !v);
         topActions.classList.toggle("ui-hidden", !v);
-        toggleUiBtn.textContent = v ? "隐藏 UI" : "显示 UI";
+        toggleUiLabel.textContent = v ? "隐藏 UI" : "显示 UI";
+        iconEyeOpen.style.display = v ? "block" : "none";
+        iconEyeClosed.style.display = v ? "none" : "block";
       }
 
       toggleUiBtn.addEventListener("click", () => {
