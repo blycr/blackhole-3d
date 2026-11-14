@@ -20,6 +20,7 @@
 - [浏览器兼容性](#浏览器兼容性)
 - [已知限制](#已知限制)
 - [验证方式](#验证方式)
+- [许可证](#许可证)
 
 ---
 
@@ -481,3 +482,23 @@ bun build script.js --target=browser --outfile=/dev/null
 ```
 
 > 说明：这些检查保证**代码可编译、数学自洽、逻辑无回归**，最终视觉效果需在具备 GPU 的浏览器中确认。
+
+---
+
+## 许可证
+
+[MIT](LICENSE) © 2026 blycr
+
+可自由使用、修改、分发，包括商业用途，保留版权声明即可。
+
+---
+
+## 仓库结构
+
+```
+blackhole-3d/
+├── index.html    # 全部实现（HTML + CSS + GLSL + JS，单文件零依赖）
+├── README.md     # 本文档
+├── LICENSE       # MIT
+└── .gitignore
+```
